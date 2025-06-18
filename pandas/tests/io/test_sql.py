@@ -63,8 +63,18 @@ pytestmark = [
 ]
 
 
-def create_unique_table_name(prefix: str) -> str:
-    return f"{prefix}_{uuid.uuid4().hex}"
+@pytest.fixture
+def create_uuid(request) -> str:
+    return f'{getattr(request, "param", "None")}_{uuid.uuid4().hex}'
+
+
+def repeat(constant):
+    while True:
+        yield constant
+
+
+def setup(connection_variables, uuid_constant):
+    return list(map(lambda *args: connection_variables, connection_variables, repeat(uuid_constant)))
 
 
 @pytest.fixture
@@ -538,7 +548,6 @@ def get_all_views(conn):
 
             return inspect(conn).get_view_names()
 
-
 def get_all_tables(conn):
     if isinstance(conn, sqlite3.Connection):
         c = conn.execute("SELECT name FROM sqlite_master WHERE type='table'")
@@ -561,6 +570,43 @@ def get_all_tables(conn):
             from sqlalchemy import inspect
 
             return inspect(conn).get_table_names()
+
+#TODO
+# test1.py has a parameter that runs in a subrequest as a fixture.
+# I need to modify this behaviour to create a subrequest in a fixture
+# so I need to see if I can modify the request inside the test, and then
+# run it with the fixture.
+
+#TODO See if I can inject something in the request object
+def filter_get_all_tables(conn, extract_this_value):
+    tables =  get_all_tables(conn)
+    with open("tables.txt", "w") as file:
+        file.write(str(tables))
+    return_val = []
+    with open("collected.txt", "w") as file:
+        file.write('\n')
+        for t in tables:
+            if t in extract_this_value:
+                file.write(str(t))
+                return_val.append(t)
+    return return_val
+
+def filter_get_all_views(conn, extract_this_value):
+    tables =  get_all_views(conn)
+    with open("views.txt", "w") as file:
+        file.write(str(tables))
+    return_val = []
+
+    with open("collected.txt", "a") as file:
+        file.write('\n')
+        for t in tables:
+            if t in extract_this_value:
+                file.write(str(t))
+                return_val.append(t)
+    return return_val
+
+
+# filter_get_all_tables(pytest.param("postgresql_psycopg2_engine", marks=pytest.mark.db),'')
 
 
 def drop_table(
@@ -654,7 +700,7 @@ def mysql_pymysql_conn_types(mysql_pymysql_engine_types):
 
 
 @pytest.fixture
-def postgresql_psycopg2_engine():
+def postgresql_psycopg2_engine(request):
     sqlalchemy = pytest.importorskip("sqlalchemy")
     pytest.importorskip("psycopg2")
     engine = sqlalchemy.create_engine(
@@ -662,10 +708,11 @@ def postgresql_psycopg2_engine():
         poolclass=sqlalchemy.pool.NullPool,
     )
     yield engine
-    for view in get_all_views(engine):
-        drop_view(view, engine)
-    for tbl in get_all_tables(engine):
-        drop_table(tbl, engine)
+
+    # for view in filter_get_all_tables(engine, getattr(request, "create_uuid")):
+    #     drop_view(view, engine)
+    # for tbl in filter_get_all_tables(engine, getattr(request, "create_uuid")):
+    #     drop_table(tbl, engine)
     engine.dispose()
 
 
@@ -1469,16 +1516,56 @@ def test_insertion_method_on_conflict_update(conn, request):
         pandasSQL.drop_table(table_uuid)
 
 
-@pytest.mark.parametrize("conn", postgresql_connectable)
-def test_read_view_postgres(conn, request):
+@pytest.fixture
+def conn(request):
+    with open("aaaa.txt", "w") as file:
+        file.write('\n\n')
+        file.write(repr(request.__dict__))
+        file.write('\n\n')
+        file.write(repr(getattr(request, "param", None)))
+        file.write('\n\n')
+        #Parameterset
+        file.write('\n\n')
+        file.write(str(getattr(request, "param", None)[0][0][0]))
+        file.write('\n\n')
+        file.write('\n\n')
+        #String
+        file.write(repr(getattr(request, "param", None)[1]))
+    conn_type = getattr(request, "param", None)[0]
+    conn = request.getfixturevalue(str(getattr(request, "param", None)[0][0][0]))
+    uuid_value = getattr(request, "param", None)[1]
+    yield conn
+    # clean_tables()
+    with open("a.txt", "w") as file:
+        file.write('\n\n')
+        file.write(repr(conn))
+
+    for view in filter_get_all_tables(conn, uuid_value):
+        drop_view(view, conn)
+    for tbl in filter_get_all_tables(conn, uuid_value):
+        drop_table(tbl, conn)
+
+
+@pytest.mark.parametrize("conn", setup(postgresql_connectable, "test_read_view_postgres"), indirect = True)
+@pytest.mark.parametrize("create_uuid", ["test_read_view_postgres"], indirect = True)
+def test_read_view_postgres(conn, create_uuid, request):
     # GH 52969
-    conn = request.getfixturevalue(conn)
+    # conn = request.getfixturevalue(conn)
+
+    # def run_test():
 
     from sqlalchemy.engine import Engine
     from sqlalchemy.sql import text
 
-    table_name = create_unique_table_name("group")
-    view_name = create_unique_table_name("group_view")
+    view_name = table_name = create_uuid
+    # view_name = "view_"+create_uuid
+
+    with open("blah.txt", "w") as file:
+        file.write('\n')
+        file.write(repr(table_name))
+        table_name = "table_"+create_uuid
+        file.write('\n')
+        file.write(repr(table_name))
 
     sql_stmt = text(
         f"""
@@ -1493,6 +1580,7 @@ def test_read_view_postgres(conn, request):
     SELECT * FROM {table_name};
     """
     )
+    request
     if isinstance(conn, Engine):
         with conn.connect() as con:
             with con.begin():
