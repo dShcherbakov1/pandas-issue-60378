@@ -63,9 +63,13 @@ pytestmark = [
 ]
 
 
-@pytest.fixture
-def create_uuid(request) -> str:
-    return f'{getattr(request, "param", "None")}_{uuid.uuid4().hex}'
+# @pytest.fixture
+def create_uuid(uuid_value):
+    # def _return_uuid(content):
+    return f'{uuid_value}_{uuid.uuid4().hex}'
+    # return _return_uuid
+
+    # return f'{getattr(request, "param", "None")}_{uuid.uuid4().hex}'
 
 
 def repeat(constant):
@@ -74,7 +78,7 @@ def repeat(constant):
 
 
 def setup(connection_variables, uuid_constant):
-    return list(map(lambda *args: connection_variables, connection_variables, repeat(uuid_constant)))
+    return list(map(lambda *args: args, connection_variables, repeat(uuid_constant)))
 
 
 @pytest.fixture
@@ -543,8 +547,22 @@ def get_all_views(conn):
                             results.append(view_name)
 
             return results
+        elif type(conn) == type("str"):
+            pytest.skip("sqlite str does not support inspect")
+            with open("get_all_views_dump.txt", "a") as file:
+                file.write('\n\n')
+                file.write((repr(conn)))
+                if "sqlite" in conn:
+                    return
         else:
+            with open("get_all_views_dump.txt", "a") as file:
+                file.write('\n\n')
+                file.write(str(type(conn)))
             from sqlalchemy import inspect
+
+            with open("view_dump.txt", "a") as file:
+                file.write('\n\n')
+                file.write((repr(conn)))
 
             return inspect(conn).get_view_names()
 
@@ -592,23 +610,23 @@ def filter_get_all_tables(conn, extract_this_value):
     return return_val
 
 def filter_get_all_views(conn, extract_this_value):
-    tables =  get_all_views(conn)
+    views =  get_all_views(conn)
     with open("views.txt", "w") as file:
-        file.write(str(tables))
+        file.write(str(views))
     return_val = []
 
     with open("collected.txt", "a") as file:
         file.write('\n')
-        for t in tables:
-            if t in extract_this_value:
-                file.write(str(t))
-                return_val.append(t)
+        for v in views:
+            if v in extract_this_value:
+                file.write(str(v))
+                return_val.append(v)
     return return_val
 
 
 # filter_get_all_tables(pytest.param("postgresql_psycopg2_engine", marks=pytest.mark.db),'')
 
-
+#todo cleanup
 def drop_table(
     table_name: str,
     conn: sqlite3.Connection | sqlalchemy.engine.Engine | sqlalchemy.engine.Connection,
@@ -623,16 +641,26 @@ def drop_table(
             with conn.cursor() as cur:
                 cur.execute(f'DROP TABLE IF EXISTS "{table_name}"')
         else:
-            with conn.begin() as con:
-                with sql.SQLDatabase(con) as db:
-                    db.drop_table(table_name)
+            import sqlalchemy
+            stmt = sqlalchemy.text(f"DROP TABLE IF EXISTS {table_name}")
+            # with conn.begin() as con:
+            #     with sql.SQLDatabase(con) as db:
+            #         db.drop_table(table_name)
+            # conn.commit()
+            if isinstance(conn, sqlalchemy.Engine):
+                conn = conn.connect()
+            conn.commit()
+            with conn.begin():
+                conn.execute(stmt)
 
 
+#todo cleanup
 def drop_view(
     view_name: str,
     conn: sqlite3.Connection | sqlalchemy.engine.Engine | sqlalchemy.engine.Connection,
 ):
     import sqlalchemy
+    from sqlalchemy import Engine
 
     if isinstance(conn, sqlite3.Connection):
         conn.execute(f"DROP VIEW IF EXISTS {sql._get_valid_sqlite_name(view_name)}")
@@ -647,8 +675,17 @@ def drop_view(
                 view_name
             )
             stmt = sqlalchemy.text(f"DROP VIEW IF EXISTS {quoted_view}")
-            with conn.begin() as con:
-                con.execute(stmt)  # type: ignore[union-attr]
+            # conn.execution_options(isolation_level="AUTOCOMMIT")
+            if isinstance(conn, Engine):
+                conn = conn.connect()
+                if conn.in_transaction():
+                    conn.commit()
+            else:
+                if conn.in_transaction():
+                    conn.commit()
+                with conn.begin():
+                    conn.execute(stmt)  # type: ignore[union-attr]
+                    conn.commit()
 
 
 @pytest.fixture
@@ -1031,11 +1068,65 @@ all_connectable_types = (
 )
 
 
-@pytest.mark.parametrize("conn", all_connectable)
-def test_dataframe_to_sql(conn, test_frame1, request):
-    # GH 51086 if conn is sqlite_engine
-    table_uuid = create_unique_table_name("test")
+@pytest.fixture
+def connect_and_uuid(request):
+    conn = request.param[0]
+    while True:
+        try:
+            c = conn[0]
+            assert type(c) != type("string")
+            conn = c
+
+        except AssertionError:
+            if type(conn) != type("string"):
+                conn = conn[0]
+            break
+    with open("raw_conn.txt", "a") as file:
+        file.write('\n\n')
+        file.write(repr(conn))
     conn = request.getfixturevalue(conn)
+    with open("conn.txt", "a") as file:
+        file.write('\n\n')
+        file.write(repr(conn))
+    # quit(1)
+    uuid_value = create_uuid(request.param[1])
+
+    import sqlalchemy
+    from sqlalchemy import Engine
+    # conn.execution_options(isolation_level="AUTOCOMMIT")
+    yield conn, uuid_value
+    # if isinstance(conn, Engine):
+    #     conn = conn.connect()
+    #     if conn.in_transaction():
+    #         conn.commit()
+    # else:
+    #     if conn.in_transaction():
+    #         conn.commit()
+    with open("a.txt", "a") as file:
+        file.write('\n\n')
+        file.write("view_"+uuid_value)
+        file.write('\n\n')
+        file.write("table_"+uuid_value)
+
+    for view in filter_get_all_views(conn, "view_"+uuid_value):
+        drop_view(view, conn)
+
+    for tbl in filter_get_all_tables(conn, "table_"+uuid_value):
+        drop_table(tbl, conn)
+
+
+@pytest.mark.parametrize("connect_and_uuid", setup(all_connectable, "test_dataframe_to_sql"), indirect = True)
+def test_all(connect_and_uuid):
+    with open("all.txt", "a") as file:
+        file.write('\n\n')
+        file.write(repr(setup(all_connectable, "test_dataframe_to_sql")))
+
+
+@pytest.mark.parametrize("connect_and_uuid", setup(all_connectable, "test_dataframe_to_sql"), indirect = True)
+def test_dataframe_to_sql(connect_and_uuid, test_frame1, request):
+    # GH 51086 if conn is sqlite_engine
+    conn, uuid = connect_and_uuid
+    table_uuid = "table_"+uuid
     test_frame1.to_sql(name=table_uuid, con=conn, if_exists="append", index=False)
 
 
@@ -1050,7 +1141,7 @@ def test_dataframe_to_sql_empty(conn, test_frame1, request):
 
     # GH 51086 if conn is sqlite_engine
     conn = request.getfixturevalue(conn)
-    table_uuid = create_unique_table_name("test")
+    table_uuid = "test_"+create_uuid("test")
     empty_df = test_frame1.iloc[:0]
     empty_df.to_sql(name=table_uuid, con=conn, if_exists="append", index=False)
 
@@ -1516,39 +1607,11 @@ def test_insertion_method_on_conflict_update(conn, request):
         pandasSQL.drop_table(table_uuid)
 
 
-@pytest.fixture
-def conn(request):
-    with open("aaaa.txt", "w") as file:
-        file.write('\n\n')
-        file.write(repr(request.__dict__))
-        file.write('\n\n')
-        file.write(repr(getattr(request, "param", None)))
-        file.write('\n\n')
-        #Parameterset
-        file.write('\n\n')
-        file.write(str(getattr(request, "param", None)[0][0][0]))
-        file.write('\n\n')
-        file.write('\n\n')
-        #String
-        file.write(repr(getattr(request, "param", None)[1]))
-    conn_type = getattr(request, "param", None)[0]
-    conn = request.getfixturevalue(str(getattr(request, "param", None)[0][0][0]))
-    uuid_value = getattr(request, "param", None)[1]
-    yield conn
-    # clean_tables()
-    with open("a.txt", "w") as file:
-        file.write('\n\n')
-        file.write(repr(conn))
-
-    for view in filter_get_all_tables(conn, uuid_value):
-        drop_view(view, conn)
-    for tbl in filter_get_all_tables(conn, uuid_value):
-        drop_table(tbl, conn)
 
 
-@pytest.mark.parametrize("conn", setup(postgresql_connectable, "test_read_view_postgres"), indirect = True)
-@pytest.mark.parametrize("create_uuid", ["test_read_view_postgres"], indirect = True)
-def test_read_view_postgres(conn, create_uuid, request):
+
+@pytest.mark.parametrize("connect_and_uuid", setup(postgresql_connectable, "test_read_view_postgres"), indirect = True)
+def test_read_view_postgres(connect_and_uuid, request):
     # GH 52969
     # conn = request.getfixturevalue(conn)
 
@@ -1556,16 +1619,9 @@ def test_read_view_postgres(conn, create_uuid, request):
 
     from sqlalchemy.engine import Engine
     from sqlalchemy.sql import text
-
-    view_name = table_name = create_uuid
-    # view_name = "view_"+create_uuid
-
-    with open("blah.txt", "w") as file:
-        file.write('\n')
-        file.write(repr(table_name))
-        table_name = "table_"+create_uuid
-        file.write('\n')
-        file.write(repr(table_name))
+    conn, uuid = connect_and_uuid
+    table_name = "table_"+uuid
+    view_name = "view_"+uuid
 
     sql_stmt = text(
         f"""
