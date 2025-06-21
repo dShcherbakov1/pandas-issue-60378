@@ -66,7 +66,7 @@ pytestmark = [
 # @pytest.fixture
 def create_uuid(uuid_value):
     # def _return_uuid(content):
-    return f'{uuid_value}_{uuid.uuid4().hex}'
+    return f'{uuid_value}_{uuid.uuid4().hex}'[0:30]
     # return _return_uuid
 
     # return f'{getattr(request, "param", "None")}_{uuid.uuid4().hex}'
@@ -77,8 +77,15 @@ def repeat(constant):
         yield constant
 
 
-def setup(connection_variables, uuid_constant):
-    return list(map(lambda *args: args, connection_variables, repeat(uuid_constant)))
+def setup(connection_variables, uuid_tables = None, uuid_views = None):
+
+    conn = []
+    for each in connection_variables:
+        if type(each) == type("str"):
+            conn.append(each)
+        else:
+            conn.append(each[0][0])
+    return list(map(lambda *args: args, conn, repeat(uuid_tables), repeat(uuid_views)))
 
 
 @pytest.fixture
@@ -547,22 +554,9 @@ def get_all_views(conn):
                             results.append(view_name)
 
             return results
-        elif type(conn) == type("str"):
-            pytest.skip("sqlite str does not support inspect")
-            with open("get_all_views_dump.txt", "a") as file:
-                file.write('\n\n')
-                file.write((repr(conn)))
-                if "sqlite" in conn:
-                    return
         else:
-            with open("get_all_views_dump.txt", "a") as file:
-                file.write('\n\n')
-                file.write(str(type(conn)))
             from sqlalchemy import inspect
 
-            with open("view_dump.txt", "a") as file:
-                file.write('\n\n')
-                file.write((repr(conn)))
 
             return inspect(conn).get_view_names()
 
@@ -589,37 +583,32 @@ def get_all_tables(conn):
 
             return inspect(conn).get_table_names()
 
-#TODO
-# test1.py has a parameter that runs in a subrequest as a fixture.
-# I need to modify this behaviour to create a subrequest in a fixture
-# so I need to see if I can modify the request inside the test, and then
-# run it with the fixture.
 
 #TODO See if I can inject something in the request object
 def filter_get_all_tables(conn, extract_this_value):
     tables =  get_all_tables(conn)
-    with open("tables.txt", "w") as file:
-        file.write(str(tables))
+    # with open("tables.txt", "w") as file:
+    #     file.write(str(tables))
     return_val = []
-    with open("collected.txt", "w") as file:
-        file.write('\n')
-        for t in tables:
-            if t in extract_this_value:
-                file.write(str(t))
-                return_val.append(t)
+    # with open("collected.txt", "w") as file:
+        # file.write('\n')
+    for t in tables:
+        if t in extract_this_value:
+            # file.write(str(t))
+            return_val.append(t)
     return return_val
 
 def filter_get_all_views(conn, extract_this_value):
     views =  get_all_views(conn)
-    with open("views.txt", "w") as file:
-        file.write(str(views))
+    # with open("views.txt", "w") as file:
+    #     file.write(str(views))
     return_val = []
 
     with open("collected.txt", "a") as file:
-        file.write('\n')
+        # file.write('\n')
         for v in views:
             if v in extract_this_value:
-                file.write(str(v))
+                # file.write(str(v))
                 return_val.append(v)
     return return_val
 
@@ -1071,68 +1060,51 @@ all_connectable_types = (
 @pytest.fixture
 def connect_and_uuid(request):
     conn = request.param[0]
-    while True:
-        try:
-            c = conn[0]
-            assert type(c) != type("string")
-            conn = c
-
-        except AssertionError:
-            if type(conn) != type("string"):
-                conn = conn[0]
-            break
-    with open("raw_conn.txt", "a") as file:
-        file.write('\n\n')
-        file.write(repr(conn))
+    table_uuid = None if request.param[1] is None else "table_"+create_uuid(request.param[1])
+    view_uuid = None if request.param[2] is None else "view_"+create_uuid(request.param[2])
     conn = request.getfixturevalue(conn)
-    with open("conn.txt", "a") as file:
-        file.write('\n\n')
-        file.write(repr(conn))
-    # quit(1)
-    uuid_value = create_uuid(request.param[1])
+    # with open('rawconn.txt', 'a') as file:
+    #     file.write('\n')
+    #     file.write(repr(conn))
+    #     file.write('\n')
+    #     file.write(str(type(conn)))
 
     import sqlalchemy
     from sqlalchemy import Engine
-    # conn.execution_options(isolation_level="AUTOCOMMIT")
-    yield conn, uuid_value
-    # if isinstance(conn, Engine):
-    #     conn = conn.connect()
-    #     if conn.in_transaction():
-    #         conn.commit()
-    # else:
-    #     if conn.in_transaction():
-    #         conn.commit()
-    with open("a.txt", "a") as file:
-        file.write('\n\n')
-        file.write("view_"+uuid_value)
-        file.write('\n\n')
-        file.write("table_"+uuid_value)
+    if table_uuid is None and view_uuid is None:
+        yield conn
+    if table_uuid is not None and view_uuid is None:
+        yield conn, table_uuid
+    if table_uuid is None and view_uuid is not None:
+        yield conn, view_uuid
+    if table_uuid is not None and view_uuid is not None:
+        yield conn, table_uuid, view_uuid
+    if type(conn) != type("str"):
+        if view_uuid is not None:
+            for view in filter_get_all_views(conn, view_uuid):
+                drop_view(view, conn)
 
-    for view in filter_get_all_views(conn, "view_"+uuid_value):
-        drop_view(view, conn)
-
-    for tbl in filter_get_all_tables(conn, "table_"+uuid_value):
-        drop_table(tbl, conn)
+        if table_uuid is not None:
+            for tbl in filter_get_all_tables(conn, table_uuid):
+                drop_table(tbl, conn)
 
 
-@pytest.mark.parametrize("connect_and_uuid", setup(all_connectable, "test_dataframe_to_sql"), indirect = True)
+@pytest.mark.parametrize("connect_and_uuid", setup(all_connectable, uuid_tables = "test_dataframe_to_sql"), indirect = True)
 def test_all(connect_and_uuid):
-    with open("all.txt", "a") as file:
-        file.write('\n\n')
-        file.write(repr(setup(all_connectable, "test_dataframe_to_sql")))
+    pass
 
-
-@pytest.mark.parametrize("connect_and_uuid", setup(all_connectable, "test_dataframe_to_sql"), indirect = True)
+@pytest.mark.parametrize("connect_and_uuid", setup(all_connectable, uuid_tables = "test_dataframe_to_sql"), indirect = True)
 def test_dataframe_to_sql(connect_and_uuid, test_frame1, request):
-    # GH 51086 if conn is sqlite_engine
-    conn, uuid = connect_and_uuid
-    table_uuid = "table_"+uuid
+    conn, table_uuid = connect_and_uuid
     test_frame1.to_sql(name=table_uuid, con=conn, if_exists="append", index=False)
 
 
-@pytest.mark.parametrize("conn", all_connectable)
-def test_dataframe_to_sql_empty(conn, test_frame1, request):
-    if conn == "postgresql_adbc_conn" and not using_string_dtype():
+# @pytest.mark.parametrize("conn", all_connectable)
+@pytest.mark.parametrize("connect_and_uuid", setup(all_connectable, uuid_tables = "test_dataframe_to_sql_empty"), indirect = True)
+def test_dataframe_to_sql_empty(connect_and_uuid, test_frame1, request):
+    conn, table_uuid = connect_and_uuid
+
+    if "adbc_driver_manager.dbapi.Connection" in str(type(conn)):
         request.node.add_marker(
             pytest.mark.xfail(
                 reason="postgres ADBC driver < 1.2 cannot insert index with null type",
@@ -1140,8 +1112,6 @@ def test_dataframe_to_sql_empty(conn, test_frame1, request):
         )
 
     # GH 51086 if conn is sqlite_engine
-    conn = request.getfixturevalue(conn)
-    table_uuid = "test_"+create_uuid("test")
     empty_df = test_frame1.iloc[:0]
     empty_df.to_sql(name=table_uuid, con=conn, if_exists="append", index=False)
 
@@ -1176,7 +1146,7 @@ def test_dataframe_to_sql_arrow_dtypes(conn, request):
         msg = "the 'timedelta'"
 
     conn = request.getfixturevalue(conn)
-    table_uuid = create_unique_table_name("test_arrow")
+    table_uuid = "table_"+create_uuid("test_arrow")
     with tm.assert_produces_warning(exp_warning, match=msg, check_stacklevel=False):
         df.to_sql(name=table_uuid, con=conn, if_exists="replace", index=False)
 
