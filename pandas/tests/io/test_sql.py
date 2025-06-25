@@ -66,7 +66,7 @@ pytestmark = [
 # @pytest.fixture
 def create_uuid(uuid_value):
     # def _return_uuid(content):
-    return f'{uuid_value}_{uuid.uuid4().hex}'[0:30]
+    return f"{uuid_value}_"+ f"{uuid.uuid4().hex}"[0:25]
     # return _return_uuid
 
     # return f'{getattr(request, "param", "None")}_{uuid.uuid4().hex}'
@@ -117,7 +117,7 @@ def sql_strings():
     }
 
 
-def iris_table_metadata():
+def iris_table_metadata(iris_name: str):
     import sqlalchemy
     from sqlalchemy import (
         Column,
@@ -131,7 +131,7 @@ def iris_table_metadata():
     dtype = Double if Version(sqlalchemy.__version__) >= Version("2.0.0") else Float
     metadata = MetaData()
     iris = Table(
-        "iris",
+        iris_name,
         metadata,
         Column("SepalLength", dtype),
         Column("SepalWidth", dtype),
@@ -142,21 +142,26 @@ def iris_table_metadata():
     return iris
 
 
-def create_and_load_iris_sqlite3(conn, iris_file: Path):
-    stmt = """CREATE TABLE iris (
+def create_and_load_iris_sqlite3(conn, iris_file: Path, iris_uuid):
+    stmt = f"""CREATE TABLE {iris_uuid} (
             "SepalLength" REAL,
             "SepalWidth" REAL,
             "PetalLength" REAL,
             "PetalWidth" REAL,
             "Name" TEXT
         )"""
-
+    import sqlalchemy
+    with open("conn_type_dump.txt", "a") as file:
+        file.write("\n")
+        file.write(repr(type(conn)))
+    if type(conn) == sqlalchemy.engine.base.Engine:
+        conn = conn.raw_connection()
     cur = conn.cursor()
     cur.execute(stmt)
     with iris_file.open(newline=None, encoding="utf-8") as csvfile:
         reader = csv.reader(csvfile)
         next(reader)
-        stmt = "INSERT INTO iris VALUES(?, ?, ?, ?, ?)"
+        stmt = f"INSERT INTO {iris_uuid} VALUES(?, ?, ?, ?, ?)"
         # ADBC requires explicit types - no implicit str -> float conversion
         records = []
         records = [
@@ -176,8 +181,8 @@ def create_and_load_iris_sqlite3(conn, iris_file: Path):
     conn.commit()
 
 
-def create_and_load_iris_postgresql(conn, iris_file: Path):
-    stmt = """CREATE TABLE iris (
+def create_and_load_iris_postgresql(conn, iris_file: Path, iris_name):
+    stmt = f"""CREATE TABLE {iris_name} (
             "SepalLength" DOUBLE PRECISION,
             "SepalWidth" DOUBLE PRECISION,
             "PetalLength" DOUBLE PRECISION,
@@ -189,7 +194,7 @@ def create_and_load_iris_postgresql(conn, iris_file: Path):
         with iris_file.open(newline=None, encoding="utf-8") as csvfile:
             reader = csv.reader(csvfile)
             next(reader)
-            stmt = "INSERT INTO iris VALUES($1, $2, $3, $4, $5)"
+            stmt = f"INSERT INTO {iris_name} VALUES($1, $2, $3, $4, $5)"
             # ADBC requires explicit types - no implicit str -> float conversion
             records = [
                 (
@@ -207,24 +212,34 @@ def create_and_load_iris_postgresql(conn, iris_file: Path):
     conn.commit()
 
 
-def create_and_load_iris(conn, iris_file: Path):
+def create_and_load_iris(conn, iris_file: Path, iris_table_uuid: str):
     from sqlalchemy import insert
-
-    iris = iris_table_metadata()
+    import sqlalchemy
+    iris = iris_table_metadata(iris_table_uuid)
 
     with iris_file.open(newline=None, encoding="utf-8") as csvfile:
         reader = csv.reader(csvfile)
         header = next(reader)
         params = [dict(zip(header, row)) for row in reader]
         stmt = insert(iris).values(params)
-        with conn.begin() as con:
-            iris.drop(con, checkfirst=True)
-            iris.create(bind=con)
-            con.execute(stmt)
+        if type(conn) == sqlalchemy.engine.base.Engine:
+            with conn.begin() as con:
+                iris.drop(con, checkfirst=True)
+                iris.create(bind=con)
+                con.execute(stmt)
+        elif type(conn) == sqlalchemy.engine.base.Connection:
+            iris.drop(conn, checkfirst=True)
+            iris.create(bind=conn)
+            conn.execute(stmt)
+        else:
+            with open("iris_not_working.txt", "a") as file:
+                file.write(repr(conn))
+                file.write('\n')
+            assert 1 == 2
 
 
-def create_and_load_iris_view(conn):
-    stmt = "CREATE VIEW iris_view AS SELECT * FROM iris"
+def create_and_load_iris_view(conn, iris_table_uuid, iris_view_uuid):
+    stmt = f"CREATE VIEW {iris_view_uuid} AS SELECT * FROM {iris_table_uuid}"
     if isinstance(conn, sqlite3.Connection):
         cur = conn.cursor()
         cur.execute(stmt)
@@ -600,16 +615,16 @@ def filter_get_all_tables(conn, extract_this_value):
 
 def filter_get_all_views(conn, extract_this_value):
     views =  get_all_views(conn)
-    # with open("views.txt", "w") as file:
+    # with open("views.txt", "a") as file:
     #     file.write(str(views))
     return_val = []
 
-    with open("collected.txt", "a") as file:
+    # with open("collected.txt", "a") as file:
         # file.write('\n')
-        for v in views:
-            if v in extract_this_value:
-                # file.write(str(v))
-                return_val.append(v)
+    for v in views:
+        if v in extract_this_value:
+            # file.write(str(v))
+            return_val.append(v)
     return return_val
 
 
@@ -669,6 +684,10 @@ def drop_view(
                 conn = conn.connect()
                 if conn.in_transaction():
                     conn.commit()
+                else:
+                    with conn.begin():
+                        conn.execute(stmt)  # type: ignore[union-attr]
+                        conn.commit()
             else:
                 if conn.in_transaction():
                     conn.commit()
@@ -687,20 +706,47 @@ def mysql_pymysql_engine():
         poolclass=sqlalchemy.pool.NullPool,
     )
     yield engine
-    for view in get_all_views(engine):
-        drop_view(view, engine)
-    for tbl in get_all_tables(engine):
-        drop_table(tbl, engine)
+    # for view in get_all_views(engine):
+    #     drop_view(view, engine)
+    # for tbl in get_all_tables(engine):
+    #     drop_table(tbl, engine)
     engine.dispose()
 
 
 @pytest.fixture
-def mysql_pymysql_engine_iris(mysql_pymysql_engine, iris_path):
-    create_and_load_iris(mysql_pymysql_engine, iris_path)
-    create_and_load_iris_view(mysql_pymysql_engine)
-    return mysql_pymysql_engine
+def mysql_pymysql_engine_iris(request, mysql_pymysql_engine, iris_path):
+    calling_test_name = request.node.name[0:request.node.name.index('[')]
+    uuid_root = f"{calling_test_name}_" + f"{uuid.uuid4().hex}"[0:10]
+    iris_table_uuid = "tbl_"+uuid_root
+    iris_view_uuid = "view_"+uuid_root
+    conn = mysql_pymysql_engine
+    # This line must cache the UUID
 
+    # with open("uuid_dump.txt", "a") as file:
+    #     # for l in request.__dict__:
+    #     #     file.write(repr(l))
+    #     #     file.write('\t')
+    #     #     file.write(repr(getattr(request, l)))
+    #     #     file.write("\n")
+    #     file.write("\n")
+    #     file.write(iris_uuid)
+    # quit(1)
+    create_and_load_iris(conn, iris_path, iris_table_uuid)
+    create_and_load_iris_view(conn, iris_table_uuid, iris_view_uuid)
+    # create_and_load_iris_view(mysql_pymysql_engine, iris_uuid)
+    yield conn, iris_table_uuid, iris_view_uuid
+    # This teardown works
+    for view in filter_get_all_views(conn, iris_view_uuid):
+        # with open("view_dump.txt", "a") as file:
+        #
+        #     file.write(repr(filter_get_all_views(mysql_pymysql_engine, iris_uuid)))
+        drop_view(view, conn)
 
+    for tbl in filter_get_all_tables(conn, iris_table_uuid):
+        # with open("table_dump.txt", "a") as file:
+        #
+        #     file.write(repr(filter_get_all_tables(mysql_pymysql_engine, iris_uuid)))
+        drop_table(tbl, conn)
 @pytest.fixture
 def mysql_pymysql_engine_types(mysql_pymysql_engine, types_data):
     create_and_load_types(mysql_pymysql_engine, types_data, "mysql")
@@ -715,8 +761,15 @@ def mysql_pymysql_conn(mysql_pymysql_engine):
 
 @pytest.fixture
 def mysql_pymysql_conn_iris(mysql_pymysql_engine_iris):
-    with mysql_pymysql_engine_iris.connect() as conn:
-        yield conn
+    # calling_test_name = request.node.name[0:request.node.name.index('[')]
+    # iris_uuid = f"{calling_test_name}_"+ f"{uuid.uuid4().hex}"[0:25]
+    #
+    # with open("mysql_conn_iris_dump.txt", "a") as file:
+    #     file.write('\n')
+    #     file.write(repr(mysql_pymysql_engine_iris[0].connect()))
+    engine, iris_table_uuid, iris_view_uuid = mysql_pymysql_engine_iris
+    with engine.connect() as conn:
+        yield conn, iris_table_uuid, iris_view_uuid
 
 
 @pytest.fixture
@@ -743,10 +796,29 @@ def postgresql_psycopg2_engine(request):
 
 
 @pytest.fixture
-def postgresql_psycopg2_engine_iris(postgresql_psycopg2_engine, iris_path):
-    create_and_load_iris(postgresql_psycopg2_engine, iris_path)
-    create_and_load_iris_view(postgresql_psycopg2_engine)
-    return postgresql_psycopg2_engine
+def postgresql_psycopg2_engine_iris(request, postgresql_psycopg2_engine, iris_path):
+    # create_and_load_iris(postgresql_psycopg2_engine, iris_path)
+    # create_and_load_iris_view(postgresql_psycopg2_engine)
+
+    conn = postgresql_psycopg2_engine
+
+    calling_test_name = request.node.name[0:request.node.name.index('[')]
+    uuid_root = f"{calling_test_name}_" + f"{uuid.uuid4().hex}"[0:10]
+    iris_table_uuid = "tbl_"+uuid_root
+    iris_view_uuid = "view_"+uuid_root
+
+    create_and_load_iris(conn, iris_path, iris_table_uuid)
+    create_and_load_iris_view(conn, iris_table_uuid, iris_view_uuid)
+
+    yield conn, iris_table_uuid, iris_view_uuid
+
+    for view in filter_get_all_views(conn, iris_view_uuid):
+        drop_view(view, conn)
+
+    for tbl in filter_get_all_tables(conn, iris_table_uuid):
+        drop_table(tbl, conn)
+
+    # return postgresql_psycopg2_engine
 
 
 @pytest.fixture
@@ -778,22 +850,49 @@ def postgresql_adbc_conn():
 
 
 @pytest.fixture
-def postgresql_adbc_iris(postgresql_adbc_conn, iris_path):
+def postgresql_adbc_iris(request, postgresql_adbc_conn, iris_path):
     import adbc_driver_manager as mgr
+    calling_test_name = request.node.name[0:request.node.name.index('[')]
+    uuid_root = f"{calling_test_name}_" + f"{uuid.uuid4().hex}"[0:10]
+    iris_table_uuid = "tbl_"+uuid_root
+    iris_view_uuid = "view_"+uuid_root
 
+    # with open("uuid_len_dump.txt", "a") as file:
+    #     file.write('\n')
+    #     file.write(repr(len(iris_uuid)))
     conn = postgresql_adbc_conn
 
-    try:
-        conn.adbc_get_table_schema("iris")
-    except mgr.ProgrammingError:
-        conn.rollback()
-        create_and_load_iris_postgresql(conn, iris_path)
-    try:
-        conn.adbc_get_table_schema("iris_view")
-    except mgr.ProgrammingError:  # note arrow-adbc issue 1022
-        conn.rollback()
-        create_and_load_iris_view(conn)
-    return conn
+    # try:
+    #     conn.adbc_get_table_schema(iris_uuid)
+    # except mgr.ProgrammingError:
+    #     conn.rollback()
+    #     create_and_load_iris_postgresql(conn, iris_path, iris_uuid)
+    # try:
+    #     conn.adbc_get_table_schema("iris_view")
+    # except mgr.ProgrammingError:  # note arrow-adbc issue 1022
+    #     conn.rollback()
+    #     create_and_load_iris_view(conn, iris_uuid)
+    # with open("conn_and_uuid_dump.txt", "a") as file:
+    #     file.write('\n')
+    #     file.write(repr(tuple([conn, iris_uuid])))
+    create_and_load_iris_postgresql(conn, iris_path, iris_table_uuid)
+    create_and_load_iris_view(conn, iris_table_uuid, iris_view_uuid)
+
+    yield conn, iris_table_uuid, iris_view_uuid
+
+    for view in filter_get_all_views(conn, iris_view_uuid):
+        # with open("view_dump.txt", "a") as file:
+        #
+        #     file.write(repr(filter_get_all_views(mysql_pymysql_engine, iris_uuid)))
+        drop_view(view, conn)
+
+    for tbl in filter_get_all_tables(conn, iris_table_uuid):
+        # with open("table_dump.txt", "a") as file:
+        #
+        #     file.write(repr(filter_get_all_tables(mysql_pymysql_engine, iris_uuid)))
+        drop_table(tbl, conn)
+
+
 
 
 @pytest.fixture
@@ -815,8 +914,9 @@ def postgresql_adbc_types(postgresql_adbc_conn, types_data):
 
 @pytest.fixture
 def postgresql_psycopg2_conn_iris(postgresql_psycopg2_engine_iris):
-    with postgresql_psycopg2_engine_iris.connect() as conn:
-        yield conn
+    engine, iris_table_uuid, iris_view_uuid = postgresql_psycopg2_engine_iris
+    with engine.connect() as conn:
+        yield conn, iris_table_uuid, iris_view_uuid
 
 
 @pytest.fixture
@@ -851,26 +951,72 @@ def sqlite_conn(sqlite_engine):
 
 
 @pytest.fixture
-def sqlite_str_iris(sqlite_str, iris_path):
+# def sqlite_str_iris(sqlite_str, iris_path):
+def sqlite_str_iris(request, iris_path, sqlite_str):
     sqlalchemy = pytest.importorskip("sqlalchemy")
     engine = sqlalchemy.create_engine(sqlite_str)
-    create_and_load_iris(engine, iris_path)
-    create_and_load_iris_view(engine)
+
+    calling_test_name = request.node.name[0:request.node.name.index('[')]
+    uuid_root = f"{calling_test_name}_" + f"{uuid.uuid4().hex}"[0:10]
+    iris_table_uuid = "tbl_"+uuid_root
+    iris_view_uuid = "view_"+uuid_root
+
+    create_and_load_iris_sqlite3(engine, iris_path, iris_table_uuid)
+    create_and_load_iris_view(engine, iris_table_uuid, iris_view_uuid)
+
+    # create_and_load_iris(engine, iris_path)
+    # create_and_load_iris_view(engine)
+    yield sqlite_str, iris_table_uuid, iris_view_uuid
+    for view in filter_get_all_views(engine, iris_view_uuid):
+        # with open("view_dump.txt", "a") as file:
+        #
+        #     file.write(repr(filter_get_all_views(mysql_pymysql_engine, iris_uuid)))
+        drop_view(view, engine)
+
+    for tbl in filter_get_all_tables(engine, iris_table_uuid):
+        # with open("table_dump.txt", "a") as file:
+        #
+        #     file.write(repr(filter_get_all_tables(mysql_pymysql_engine, iris_uuid)))
+        drop_table(tbl, engine)
+
     engine.dispose()
-    return sqlite_str
 
 
 @pytest.fixture
-def sqlite_engine_iris(sqlite_engine, iris_path):
-    create_and_load_iris(sqlite_engine, iris_path)
-    create_and_load_iris_view(sqlite_engine)
-    return sqlite_engine
+# def sqlite_engine_iris(sqlite_engine, iris_path):
+def sqlite_engine_iris(request, iris_path, sqlite_engine):
+    calling_test_name = request.node.name[0:request.node.name.index('[')]
+    uuid_root = f"{calling_test_name}_" + f"{uuid.uuid4().hex}"[0:10]
+    iris_table_uuid = "tbl_"+uuid_root
+    iris_view_uuid = "view_"+uuid_root
+    conn = sqlite_engine
+
+    create_and_load_iris_sqlite3(conn, iris_path, iris_table_uuid)
+    create_and_load_iris_view(conn, iris_table_uuid, iris_view_uuid)
+    yield conn, iris_table_uuid, iris_view_uuid
+
+    for view in filter_get_all_views(conn, iris_view_uuid):
+        # with open("view_dump.txt", "a") as file:
+        #
+        #     file.write(repr(filter_get_all_views(mysql_pymysql_engine, iris_uuid)))
+        drop_view(view, conn)
+
+    for tbl in filter_get_all_tables(conn, iris_table_uuid):
+        # with open("table_dump.txt", "a") as file:
+        #
+        #     file.write(repr(filter_get_all_tables(mysql_pymysql_engine, iris_uuid)))
+        drop_table(tbl, conn)
+
+    # create_and_load_iris(sqlite_engine, iris_path)
+    # create_and_load_iris_view(sqlite_engine)
+    # return sqlite_engine
 
 
 @pytest.fixture
 def sqlite_conn_iris(sqlite_engine_iris):
-    with sqlite_engine_iris.connect() as conn:
-        yield conn
+    engine, iris_table_uuid, iris_view_uuid = sqlite_engine_iris
+    with engine.connect() as conn:
+        yield conn, iris_table_uuid, iris_view_uuid
 
 
 @pytest.fixture
@@ -912,21 +1058,41 @@ def sqlite_adbc_conn():
 
 
 @pytest.fixture
-def sqlite_adbc_iris(sqlite_adbc_conn, iris_path):
+def sqlite_adbc_iris(request, sqlite_adbc_conn, iris_path):
     import adbc_driver_manager as mgr
+    calling_test_name = request.node.name[0:request.node.name.index('[')]
+    uuid_root = f"{calling_test_name}_" + f"{uuid.uuid4().hex}"[0:10]
+    iris_table_uuid = "tbl_"+uuid_root
+    iris_view_uuid = "view_"+uuid_root
 
     conn = sqlite_adbc_conn
-    try:
-        conn.adbc_get_table_schema("iris")
-    except mgr.ProgrammingError:
-        conn.rollback()
-        create_and_load_iris_sqlite3(conn, iris_path)
-    try:
-        conn.adbc_get_table_schema("iris_view")
-    except mgr.ProgrammingError:
-        conn.rollback()
-        create_and_load_iris_view(conn)
-    return conn
+    create_and_load_iris_sqlite3(conn, iris_path, iris_table_uuid)
+    create_and_load_iris_view(conn, iris_table_uuid, iris_view_uuid)
+
+    # try:
+    #     conn.adbc_get_table_schema(iris_uuid)
+    # except mgr.ProgrammingError:
+    #     conn.rollback()
+    #     create_and_load_iris_sqlite3(conn, iris_path)
+    # try:
+    #     conn.adbc_get_table_schema("iris_view")
+    # except mgr.ProgrammingError:
+    #     conn.rollback()
+    #     create_and_load_iris_view(conn)
+    yield conn, iris_table_uuid, iris_view_uuid
+
+    for view in filter_get_all_views(conn, iris_view_uuid):
+        # with open("view_dump.txt", "a") as file:
+        #
+        #     file.write(repr(filter_get_all_views(mysql_pymysql_engine, iris_uuid)))
+        drop_view(view, conn)
+
+    for tbl in filter_get_all_tables(conn, iris_table_uuid):
+        # with open("table_dump.txt", "a") as file:
+        #
+        #     file.write(repr(filter_get_all_tables(mysql_pymysql_engine, iris_uuid)))
+        drop_table(tbl, conn)
+
 
 
 @pytest.fixture
@@ -959,10 +1125,31 @@ def sqlite_buildin():
 
 
 @pytest.fixture
-def sqlite_buildin_iris(sqlite_buildin, iris_path):
-    create_and_load_iris_sqlite3(sqlite_buildin, iris_path)
-    create_and_load_iris_view(sqlite_buildin)
-    return sqlite_buildin
+def sqlite_buildin_iris(request, sqlite_buildin, iris_path):
+    calling_test_name = request.node.name[0:request.node.name.index('[')]
+    uuid_root = f"{calling_test_name}_" + f"{uuid.uuid4().hex}"[0:10]
+    iris_table_uuid = "tbl_"+uuid_root
+    iris_view_uuid = "view_"+uuid_root
+    conn = sqlite3.connect(":memory:")
+
+    create_and_load_iris_sqlite3(conn, iris_path, iris_table_uuid)
+    create_and_load_iris_view(conn, iris_table_uuid, iris_view_uuid)
+    yield conn, iris_table_uuid, iris_view_uuid
+    for view in filter_get_all_views(conn, iris_view_uuid):
+        # with open("view_dump.txt", "a") as file:
+        #
+        #     file.write(repr(filter_get_all_views(mysql_pymysql_engine, iris_uuid)))
+        drop_view(view, conn)
+
+    for tbl in filter_get_all_tables(conn, iris_table_uuid):
+        # with open("table_dump.txt", "a") as file:
+        #
+        #     file.write(repr(filter_get_all_tables(mysql_pymysql_engine, iris_uuid)))
+        drop_table(tbl, conn)
+    conn.close()
+
+    # create_and_load_iris_sqlite3(sqlite_buildin, iris_path)
+    # create_and_load_iris_view(sqlite_buildin)
 
 
 @pytest.fixture
@@ -1056,13 +1243,54 @@ all_connectable_types = (
     sqlalchemy_connectable_types + ["sqlite_buildin_types"] + adbc_connectable_types
 )
 
+@pytest.fixture
+def iris_connect_and_per_test_id(request, iris_path):
+    conn_name = request.param[0]
+    # with open("conn_name.txt", "a") as file:
+    #     file.write('\n')
+    #     file.write(str(conn_name))
+
+    conn, table_uuid, view_uuid = request.getfixturevalue(conn_name)
+    # create_and_load_iris(conn, iris_path, uuid)
+    # with open("view_dump_internal.txt", "a") as file:
+    #     for view in filter_get_all_views(conn, uuid):
+    #         # with open("view_dump.txt", "a") as file:
+    #         #
+    #         #     file.write(repr(filter_get_all_views(mysql_pymysql_engine, iris_uuid)))
+    #         file.write(repr(view))
+    #         file.write('\n')
+
+    # with open("conn_dump.txt", "a") as file:
+    #     file.write('\n')
+    #     file.write(repr(conn))
+    # with open("uuid_dump.txt", "a") as file:
+    #     file.write("\n")
+    #     file.write(uuid)
+
+    # with open("conn_type.txt", "a") as file:
+    #     file.write('\n')
+    #     file.write(str(type(conn)))
+    #     file.write('\n')
+    #     file.write(repr(conn))
+    #     file.write('\t')
+    #     file.write(repr(conn.connect()))
+    # create_and_load_iris(conn, iris_path, uuid)
+    # create_and_load_iris_view(conn, iris_view_uuid)
+
+    yield {
+        "conn": conn,
+        "iris_table_uuid": table_uuid,
+        "iris_view_uuid": view_uuid,
+        "conn_name": conn_name
+    }
+
 
 @pytest.fixture
 def connect_and_uuid(request):
-    conn = request.param[0]
+    conn_name = request.param[0]
     table_uuid = None if request.param[1] is None else "table_"+create_uuid(request.param[1])
     view_uuid = None if request.param[2] is None else "view_"+create_uuid(request.param[2])
-    conn = request.getfixturevalue(conn)
+    conn = request.getfixturevalue(conn_name)
     # with open('rawconn.txt', 'a') as file:
     #     file.write('\n')
     #     file.write(repr(conn))
@@ -1071,14 +1299,12 @@ def connect_and_uuid(request):
 
     import sqlalchemy
     from sqlalchemy import Engine
-    if table_uuid is None and view_uuid is None:
-        yield conn
-    if table_uuid is not None and view_uuid is None:
-        yield conn, table_uuid
-    if table_uuid is None and view_uuid is not None:
-        yield conn, view_uuid
-    if table_uuid is not None and view_uuid is not None:
-        yield conn, table_uuid, view_uuid
+    yield {
+        "conn": conn,
+        "table_uuid": table_uuid,
+        "view_uuid": view_uuid,
+        "conn_name": conn_name
+    }
     if type(conn) != type("str"):
         if view_uuid is not None:
             for view in filter_get_all_views(conn, view_uuid):
@@ -1089,9 +1315,9 @@ def connect_and_uuid(request):
                 drop_table(tbl, conn)
 
 
-@pytest.mark.parametrize("connect_and_uuid", setup(all_connectable, uuid_tables = "test_dataframe_to_sql"), indirect = True)
-def test_all(connect_and_uuid):
-    pass
+# @pytest.mark.parametrize("connect_and_uuid", setup(all_connectable, uuid_tables = "test_dataframe_to_sql"), indirect = True)
+# def test_all(connect_and_uuid):
+#     pass
 
 @pytest.mark.parametrize("connect_and_uuid", setup(all_connectable, uuid_tables = "test_dataframe_to_sql"), indirect = True)
 def test_dataframe_to_sql(connect_and_uuid, test_frame1, request):
@@ -1163,7 +1389,7 @@ def test_dataframe_to_sql_arrow_dtypes_missing(conn, request, nulls_fixture):
         }
     )
     conn = request.getfixturevalue(conn)
-    table_uuid = create_unique_table_name("test_arrow")
+    table_uuid = "table_"+create_uuid("test_arrow")
     df.to_sql(name=table_uuid, con=conn, if_exists="replace", index=False)
 
 
@@ -1178,7 +1404,7 @@ def test_to_sql(conn, method, test_frame1, request):
         )
 
     conn = request.getfixturevalue(conn)
-    table_uuid = create_unique_table_name("test_frame")
+    table_uuid = "table_"+create_uuid("test_frame")
     with pandasSQL_builder(conn, need_transaction=True) as pandasSQL:
         pandasSQL.to_sql(test_frame1, table_uuid, method=method)
         assert pandasSQL.has_table(table_uuid)
@@ -1189,7 +1415,7 @@ def test_to_sql(conn, method, test_frame1, request):
 @pytest.mark.parametrize("mode, num_row_coef", [("replace", 1), ("append", 2)])
 def test_to_sql_exist(conn, mode, num_row_coef, test_frame1, request):
     conn = request.getfixturevalue(conn)
-    table_uuid = create_unique_table_name("test_frame")
+    table_uuid = "table_"+create_uuid("test_frame")
     with pandasSQL_builder(conn, need_transaction=True) as pandasSQL:
         pandasSQL.to_sql(test_frame1, table_uuid, if_exists="fail")
         pandasSQL.to_sql(test_frame1, table_uuid, if_exists=mode)
@@ -1200,7 +1426,7 @@ def test_to_sql_exist(conn, mode, num_row_coef, test_frame1, request):
 @pytest.mark.parametrize("conn", all_connectable)
 def test_to_sql_exist_fail(conn, test_frame1, request):
     conn = request.getfixturevalue(conn)
-    table_uuid = create_unique_table_name("test_frame")
+    table_uuid = "table_"+create_uuid("test_frame")
     with pandasSQL_builder(conn, need_transaction=True) as pandasSQL:
         pandasSQL.to_sql(test_frame1, table_uuid, if_exists="fail")
         assert pandasSQL.has_table(table_uuid)
@@ -1210,20 +1436,50 @@ def test_to_sql_exist_fail(conn, test_frame1, request):
             pandasSQL.to_sql(test_frame1, table_uuid, if_exists="fail")
 
 
-@pytest.mark.parametrize("conn", all_connectable_iris)
-def test_read_iris_query(conn, request):
-    conn = request.getfixturevalue(conn)
-    iris_frame = read_sql_query("SELECT * FROM iris", conn)
+@pytest.mark.parametrize("iris_connect_and_per_test_id", setup(all_connectable_iris), indirect = True)
+def test_read_iris_query(iris_connect_and_per_test_id, request):
+    conn = iris_connect_and_per_test_id['conn']
+    iris_uuid = iris_connect_and_per_test_id['iris_table_uuid']
+    conn_name = iris_connect_and_per_test_id['conn_name']
+
+
+    iris_frame = read_sql_query(f"SELECT * FROM {iris_uuid}", conn)
     check_iris_frame(iris_frame)
-    iris_frame = pd.read_sql("SELECT * FROM iris", conn)
+    iris_frame = pd.read_sql(f"SELECT * FROM {iris_uuid}", conn)
     check_iris_frame(iris_frame)
-    iris_frame = pd.read_sql("SELECT * FROM iris where 0=1", conn)
+    iris_frame = pd.read_sql(f"SELECT * FROM {iris_uuid} where 0=1", conn)
     assert iris_frame.shape == (0, 5)
     assert "SepalWidth" in iris_frame.columns
 
 
-@pytest.mark.parametrize("conn", all_connectable_iris)
-def test_read_iris_query_chunksize(conn, request):
+@pytest.mark.parametrize("iris_connect_and_per_test_id", setup(all_connectable_iris), indirect = True)
+def test_read_iris_query_chunksize(iris_connect_and_per_test_id, request):
+    conn = iris_connect_and_per_test_id['conn']
+    iris_uuid = iris_connect_and_per_test_id['iris_table_uuid']
+    conn_name = iris_connect_and_per_test_id['conn_name']
+
+    if "adbc" in conn_name:
+        request.node.add_marker(
+            pytest.mark.xfail(
+                reason="'chunksize' not implemented for ADBC drivers",
+                strict=True,
+            )
+        )
+    iris_frame = concat(read_sql_query(f"SELECT * FROM {iris_uuid}", conn, chunksize=7))
+    check_iris_frame(iris_frame)
+    iris_frame = concat(pd.read_sql(f"SELECT * FROM {iris_uuid}", conn, chunksize=7))
+    check_iris_frame(iris_frame)
+    iris_frame = concat(pd.read_sql(f"SELECT * FROM {iris_uuid} where 0=1", conn, chunksize=7))
+    assert iris_frame.shape == (0, 5)
+    assert "SepalWidth" in iris_frame.columns
+
+
+@pytest.mark.parametrize("iris_connect_and_per_test_id", setup(sqlalchemy_connectable_iris), indirect = True)
+def test_read_iris_query_expression_with_parameter(iris_connect_and_per_test_id, request):
+    conn = iris_connect_and_per_test_id['conn']
+    iris_uuid = iris_connect_and_per_test_id['iris_table_uuid']
+    conn_name = iris_connect_and_per_test_id['conn_name']
+
     if "adbc" in conn:
         request.node.add_marker(
             pytest.mark.xfail(
@@ -1231,26 +1487,6 @@ def test_read_iris_query_chunksize(conn, request):
                 strict=True,
             )
         )
-    conn = request.getfixturevalue(conn)
-    iris_frame = concat(read_sql_query("SELECT * FROM iris", conn, chunksize=7))
-    check_iris_frame(iris_frame)
-    iris_frame = concat(pd.read_sql("SELECT * FROM iris", conn, chunksize=7))
-    check_iris_frame(iris_frame)
-    iris_frame = concat(pd.read_sql("SELECT * FROM iris where 0=1", conn, chunksize=7))
-    assert iris_frame.shape == (0, 5)
-    assert "SepalWidth" in iris_frame.columns
-
-
-@pytest.mark.parametrize("conn", sqlalchemy_connectable_iris)
-def test_read_iris_query_expression_with_parameter(conn, request):
-    if "adbc" in conn:
-        request.node.add_marker(
-            pytest.mark.xfail(
-                reason="'chunksize' not implemented for ADBC drivers",
-                strict=True,
-            )
-        )
-    conn = request.getfixturevalue(conn)
     from sqlalchemy import (
         MetaData,
         Table,
@@ -1260,7 +1496,7 @@ def test_read_iris_query_expression_with_parameter(conn, request):
 
     metadata = MetaData()
     autoload_con = create_engine(conn) if isinstance(conn, str) else conn
-    iris = Table("iris", metadata, autoload_with=autoload_con)
+    iris = Table(iris_uuid, metadata, autoload_with=autoload_con)
     iris_frame = read_sql_query(
         select(iris), conn, params={"name": "Iris-setosa", "length": 5.1}
     )
@@ -1269,53 +1505,71 @@ def test_read_iris_query_expression_with_parameter(conn, request):
         autoload_con.dispose()
 
 
-@pytest.mark.parametrize("conn", all_connectable_iris)
-def test_read_iris_query_string_with_parameter(conn, request, sql_strings):
-    if "adbc" in conn:
+@pytest.mark.parametrize("iris_connect_and_per_test_id", setup(all_connectable_iris), indirect = True)
+def test_read_iris_query_string_with_parameter(iris_connect_and_per_test_id, request, sql_strings):
+    conn = iris_connect_and_per_test_id['conn']
+    iris_uuid = iris_connect_and_per_test_id['iris_table_uuid']
+    conn_name = iris_connect_and_per_test_id['conn_name']
+
+    if "adbc" in conn_name:
         request.node.add_marker(
             pytest.mark.xfail(
                 reason="'chunksize' not implemented for ADBC drivers",
                 strict=True,
             )
         )
-
-    for db, query in sql_strings["read_parameters"].items():
-        if db in conn:
+    iris_strings = sql_strings["read_parameters"]
+    for key, value in iris_strings:
+        iris_strings[key] = iris_strings[value].replace(iris, iris_uuid)
+    # iris_sql_strings = sql_strings["read_parameters"].replace("iris", iris_uuid)
+    for db, query in iris_sql_strings.items():
+        if db in conn_name:
             break
     else:
-        raise KeyError(f"No part of {conn} found in sql_strings['read_parameters']")
-    conn = request.getfixturevalue(conn)
+        raise KeyError(f"No part of {conn_name} found in sql_strings['read_parameters']")
+
     iris_frame = read_sql_query(query, conn, params=("Iris-setosa", 5.1))
     check_iris_frame(iris_frame)
 
 
-@pytest.mark.parametrize("conn", sqlalchemy_connectable_iris)
-def test_read_iris_table(conn, request):
+@pytest.mark.parametrize("iris_connect_and_per_test_id", setup(sqlalchemy_connectable_iris), indirect = True)
+def test_read_iris_table(iris_connect_and_per_test_id, request):
     # GH 51015 if conn = sqlite_iris_str
-    conn = request.getfixturevalue(conn)
-    iris_frame = read_sql_table("iris", conn)
+    conn = iris_connect_and_per_test_id['conn']
+    iris_uuid = iris_connect_and_per_test_id['iris_table_uuid']
+    conn_name = iris_connect_and_per_test_id['conn_name']
+
+    iris_frame = read_sql_table(iris_uuid, conn)
     check_iris_frame(iris_frame)
-    iris_frame = pd.read_sql("iris", conn)
+    iris_frame = pd.read_sql(iris_uuid, conn)
     check_iris_frame(iris_frame)
 
 
-@pytest.mark.parametrize("conn", sqlalchemy_connectable_iris)
-def test_read_iris_table_chunksize(conn, request):
-    if "adbc" in conn:
+@pytest.mark.parametrize("iris_connect_and_per_test_id", setup(sqlalchemy_connectable_iris), indirect = True)
+def test_read_iris_table_chunksize(iris_connect_and_per_test_id, request):
+    conn = iris_connect_and_per_test_id['conn']
+    iris_uuid = iris_connect_and_per_test_id['iris_table_uuid']
+    conn_name = iris_connect_and_per_test_id['conn_name']
+    if "adbc" in conn_name:
         request.node.add_marker(
-            pytest.mark.xfail(reason="chunksize argument NotImplemented with ADBC")
+            pytest.mark.xfail(reason="chunksize argument NotImplemented with ADBC",
+            strict = True)
         )
-    conn = request.getfixturevalue(conn)
-    iris_frame = concat(read_sql_table("iris", conn, chunksize=7))
+    # if "sqlite_buildin" in conn_name:
+    #     request.node.add_marker(
+    #         pytest.mark.xfail(reason="SQLite DBAPI connection mode not supported.",
+    #         strict = True)
+    #     )
+    iris_frame = concat(read_sql_table(iris_uuid, conn, chunksize=7))
     check_iris_frame(iris_frame)
-    iris_frame = concat(pd.read_sql("iris", conn, chunksize=7))
+    iris_frame = concat(pd.read_sql(iris_uuid, conn, chunksize=7))
     check_iris_frame(iris_frame)
 
 
 @pytest.mark.parametrize("conn", sqlalchemy_connectable)
 def test_to_sql_callable(conn, test_frame1, request):
     conn = request.getfixturevalue(conn)
-    table_uuid = create_unique_table_name("test_frame")
+    table_uuid = "table_"+create_uuid("test_frame")
 
     check = []  # used to double check function below is really being used
 
@@ -1366,7 +1620,7 @@ def test_default_type_conversion(conn, request):
 @pytest.mark.parametrize("conn", mysql_connectable)
 def test_read_procedure(conn, request):
     conn = request.getfixturevalue(conn)
-    table_uuid = create_unique_table_name("test_frame")
+    table_uuid = "table_"+create_uuid("test_frame")
 
     # GH 7324
     # Although it is more an api test, it is added to the
@@ -1427,7 +1681,7 @@ def test_copy_from_callable_insertion_method(conn, expected_count, request):
         return expected_count
 
     conn = request.getfixturevalue(conn)
-    table_uuid = create_unique_table_name("test_frame")
+    table_uuid = "table_"+create_uuid("test_frame")
     expected = DataFrame({"col1": [1, 2], "col2": [0.1, 0.2], "col3": ["a", "n"]})
     result_count = expected.to_sql(
         name=table_uuid, con=conn, index=False, method=psql_insert_copy
@@ -1445,7 +1699,7 @@ def test_copy_from_callable_insertion_method(conn, expected_count, request):
 def test_insertion_method_on_conflict_do_nothing(conn, request):
     # GH 15988: Example in to_sql docstring
     conn = request.getfixturevalue(conn)
-    table_uuid = create_unique_table_name("test_insert_conflict")
+    table_uuid = "table_"+create_uuid("test_insert_conflict")
 
     from sqlalchemy.dialects.postgresql import insert
     from sqlalchemy.engine import Engine
@@ -1508,7 +1762,7 @@ def test_to_sql_on_public_schema(conn, request):
         )
 
     conn = request.getfixturevalue(conn)
-    table_uuid = create_unique_table_name("test_public_schema")
+    table_uuid = "table_"+create_uuid("test_public_schema")
 
     test_data = DataFrame([[1, 2.1, "a"], [2, 3.1, "b"]], columns=list("abc"))
     test_data.to_sql(
@@ -1527,7 +1781,7 @@ def test_to_sql_on_public_schema(conn, request):
 def test_insertion_method_on_conflict_update(conn, request):
     # GH 14553: Example in to_sql docstring
     conn = request.getfixturevalue(conn)
-    table_uuid = create_unique_table_name("test_insert_conflict")
+    table_uuid = "table_"+create_uuid("test_insert_conflict")
 
     from sqlalchemy.dialects.mysql import insert
     from sqlalchemy.engine import Engine
@@ -1621,8 +1875,8 @@ def test_read_view_postgres(connect_and_uuid, request):
 
 def test_read_view_sqlite(sqlite_buildin):
     # GH 52969
-    table_uuid = create_unique_table_name("groups")
-    view_uuid = create_unique_table_name("group_view")
+    table_uuid = "table_"+create_uuid("groups")
+    view_uuid = "view_"+create_uuid("group_view")
 
     create_table = f"""
 CREATE TABLE {table_uuid} (
@@ -1658,18 +1912,21 @@ def flavor(conn_name):
     raise ValueError(f"unsupported connection: {conn_name}")
 
 
-@pytest.mark.parametrize("conn", all_connectable_iris)
-def test_read_sql_iris_parameter(conn, request, sql_strings):
-    if "adbc" in conn:
+@pytest.mark.parametrize("iris_connect_and_per_test_id", setup(all_connectable_iris), indirect = True)
+def test_read_sql_iris_parameter(iris_connect_and_per_test_id, request, sql_strings):
+    conn = iris_connect_and_per_test_id['conn']
+    iris_uuid = iris_connect_and_per_test_id['iris_table_uuid']
+    conn_name = iris_connect_and_per_test_id['conn_name']
+
+    if "adbc" in conn_name:
         request.node.add_marker(
             pytest.mark.xfail(
                 reason="'params' not implemented for ADBC drivers",
                 strict=True,
             )
         )
-    conn_name = conn
-    conn = request.getfixturevalue(conn)
-    query = sql_strings["read_parameters"][flavor(conn_name)]
+    iris_sql_strings = sql_strings["read_parameters"][flavor(conn_name)].replace("iris", iris_uuid)
+    query = iris_sql_strings
     params = ("Iris-setosa", 5.1)
     with pandasSQL_builder(conn) as pandasSQL:
         with pandasSQL.run_transaction():
@@ -1677,9 +1934,22 @@ def test_read_sql_iris_parameter(conn, request, sql_strings):
     check_iris_frame(iris_frame)
 
 
-@pytest.mark.parametrize("conn", all_connectable_iris)
-def test_read_sql_iris_named_parameter(conn, request, sql_strings):
-    if "adbc" in conn:
+# @pytest.mark.parametrize("conn", all_connectable_iris)
+@pytest.mark.parametrize("iris_connect_and_per_test_id", setup(all_connectable_iris), indirect = True)
+def test_read_sql_iris_named_parameter(iris_connect_and_per_test_id, iris_path, request, sql_strings):
+    conn = iris_connect_and_per_test_id['conn']
+    iris_uuid = iris_connect_and_per_test_id['iris_table_uuid']
+    conn_name = iris_connect_and_per_test_id['conn_name']
+
+    # with open("view_dump_external.txt", "a") as file:
+    #     for view in filter_get_all_views(conn, iris_uuid):
+    #         # with open("view_dump.txt", "a") as file:
+    #         #
+    #         #     file.write(repr(filter_get_all_views(mysql_pymysql_engine, iris_uuid)))
+    #         file.write(repr(view))
+    #         file.write('\n')
+
+    if "adbc" in conn_name:
         request.node.add_marker(
             pytest.mark.xfail(
                 reason="'params' not implemented for ADBC drivers",
@@ -1687,9 +1957,18 @@ def test_read_sql_iris_named_parameter(conn, request, sql_strings):
             )
         )
 
-    conn_name = conn
-    conn = request.getfixturevalue(conn)
     query = sql_strings["read_named_parameters"][flavor(conn_name)]
+    # with open("query_dump.txt", "a") as file:
+    #     file.write(query)
+    #     file.write('\n')
+    query = query.replace("iris", iris_uuid)
+    # with open("uuid_dump.txt", "a") as file:
+    #     file.write(iris_uuid)
+    #     file.write('\n')
+    # with open("query_dump.txt", "a") as file:
+    #     file.write(query)
+    #     file.write('\n')
+
     params = {"name": "Iris-setosa", "length": 5.1}
     with pandasSQL_builder(conn) as pandasSQL:
         with pandasSQL.run_transaction():
@@ -1697,15 +1976,20 @@ def test_read_sql_iris_named_parameter(conn, request, sql_strings):
     check_iris_frame(iris_frame)
 
 
-@pytest.mark.parametrize("conn", all_connectable_iris)
-def test_read_sql_iris_no_parameter_with_percent(conn, request, sql_strings):
-    if "mysql" in conn or ("postgresql" in conn and "adbc" not in conn):
+@pytest.mark.parametrize("iris_connect_and_per_test_id", setup(all_connectable_iris), indirect = True)
+def test_read_sql_iris_no_parameter_with_percent(iris_connect_and_per_test_id, iris_path, request, sql_strings):
+    conn = iris_connect_and_per_test_id['conn']
+    iris_uuid = iris_connect_and_per_test_id['iris_table_uuid']
+    conn_name = iris_connect_and_per_test_id['conn_name']
+
+
+    if "mysql" in conn_name or ("postgresql" in conn_name and "adbc" not in conn_name):
         request.applymarker(pytest.mark.xfail(reason="broken test"))
 
-    conn_name = conn
-    conn = request.getfixturevalue(conn)
 
     query = sql_strings["read_no_parameters_with_percent"][flavor(conn_name)]
+    query = query.replace("iris", iris_uuid)
+
     with pandasSQL_builder(conn) as pandasSQL:
         with pandasSQL.run_transaction():
             iris_frame = pandasSQL.read_query(query, params=None)
@@ -1715,21 +1999,26 @@ def test_read_sql_iris_no_parameter_with_percent(conn, request, sql_strings):
 # -----------------------------------------------------------------------------
 # -- Testing the public API
 
+@pytest.mark.parametrize("iris_connect_and_per_test_id", setup(all_connectable_iris), indirect = True)
+def test_api_read_sql_view(iris_connect_and_per_test_id, request):
 
-@pytest.mark.parametrize("conn", all_connectable_iris)
-def test_api_read_sql_view(conn, request):
-    conn = request.getfixturevalue(conn)
-    iris_frame = sql.read_sql_query("SELECT * FROM iris_view", conn)
+    conn = iris_connect_and_per_test_id['conn']
+    iris_table_uuid = iris_connect_and_per_test_id['iris_table_uuid']
+    iris_view_uuid = iris_connect_and_per_test_id['iris_view_uuid']
+
+    iris_frame = sql.read_sql_query(f"SELECT * FROM {iris_view_uuid}", conn)
     check_iris_frame(iris_frame)
 
 
-@pytest.mark.parametrize("conn", all_connectable_iris)
-def test_api_read_sql_with_chunksize_no_result(conn, request):
-    if "adbc" in conn:
+@pytest.mark.parametrize("iris_connect_and_per_test_id", setup(all_connectable_iris), indirect = True)
+def test_api_read_sql_with_chunksize_no_result(conn, iris_connect_and_per_test_id, request):
+    conn = iris_connect_and_per_test_id['conn']
+    iris_uuid = iris_connect_and_per_test_id['iris_table_uuid']
+    conn_name = iris_connect_and_per_test_id['conn_name']
+    if "adbc" in conn_name:
         request.node.add_marker(
             pytest.mark.xfail(reason="chunksize argument NotImplemented with ADBC")
         )
-    conn = request.getfixturevalue(conn)
     query = 'SELECT * FROM iris_view WHERE "SepalLength" < 0.0'
     with_batch = sql.read_sql_query(query, conn, chunksize=5)
     without_batch = sql.read_sql_query(query, conn)
@@ -1739,7 +2028,7 @@ def test_api_read_sql_with_chunksize_no_result(conn, request):
 @pytest.mark.parametrize("conn", all_connectable)
 def test_api_to_sql(conn, request, test_frame1):
     conn = request.getfixturevalue(conn)
-    table_uuid = create_unique_table_name("test_frame1")
+    table_uuid = "table_"+create_uuid("test_frame1")
     if sql.has_table(table_uuid, conn):
         with sql.SQLDatabase(conn, need_transaction=True) as pandasSQL:
             pandasSQL.drop_table(table_uuid)
@@ -1751,7 +2040,7 @@ def test_api_to_sql(conn, request, test_frame1):
 @pytest.mark.parametrize("conn", all_connectable)
 def test_api_to_sql_fail(conn, request, test_frame1):
     conn = request.getfixturevalue(conn)
-    table_uuid = create_unique_table_name("test_frame2")
+    table_uuid = "table_"+create_uuid("test_frame2")
     if sql.has_table(table_uuid, conn):
         with sql.SQLDatabase(conn, need_transaction=True) as pandasSQL:
             pandasSQL.drop_table(table_uuid)
@@ -1767,7 +2056,7 @@ def test_api_to_sql_fail(conn, request, test_frame1):
 @pytest.mark.parametrize("conn", all_connectable)
 def test_api_to_sql_replace(conn, request, test_frame1):
     conn = request.getfixturevalue(conn)
-    table_uuid = create_unique_table_name("test_frame3")
+    table_uuid = "table_"+create_uuid("test_frame3")
     if sql.has_table(table_uuid, conn):
         with sql.SQLDatabase(conn, need_transaction=True) as pandasSQL:
             pandasSQL.drop_table(table_uuid)
@@ -1786,7 +2075,7 @@ def test_api_to_sql_replace(conn, request, test_frame1):
 @pytest.mark.parametrize("conn", all_connectable)
 def test_api_to_sql_append(conn, request, test_frame1):
     conn = request.getfixturevalue(conn)
-    table_uuid = create_unique_table_name("test_frame4")
+    table_uuid = "table_"+create_uuid("test_frame4")
     if sql.has_table(table_uuid, conn):
         with sql.SQLDatabase(conn, need_transaction=True) as pandasSQL:
             pandasSQL.drop_table(table_uuid)
@@ -1806,7 +2095,7 @@ def test_api_to_sql_append(conn, request, test_frame1):
 @pytest.mark.parametrize("conn", all_connectable)
 def test_api_to_sql_type_mapping(conn, request, test_frame3):
     conn = request.getfixturevalue(conn)
-    table_uuid = create_unique_table_name("test_frame5")
+    table_uuid = "table_"+create_uuid("test_frame5")
     if sql.has_table(table_uuid, conn):
         with sql.SQLDatabase(conn, need_transaction=True) as pandasSQL:
             pandasSQL.drop_table(table_uuid)
@@ -1820,7 +2109,7 @@ def test_api_to_sql_type_mapping(conn, request, test_frame3):
 @pytest.mark.parametrize("conn", all_connectable)
 def test_api_to_sql_series(conn, request):
     conn = request.getfixturevalue(conn)
-    table_uuid = create_unique_table_name("test_series")
+    table_uuid = "table_"+create_uuid("test_series")
     if sql.has_table(table_uuid, conn):
         with sql.SQLDatabase(conn, need_transaction=True) as pandasSQL:
             pandasSQL.drop_table(table_uuid)
@@ -1835,7 +2124,7 @@ def test_api_to_sql_series(conn, request):
 def test_api_roundtrip(conn, request, test_frame1):
     conn_name = conn
     conn = request.getfixturevalue(conn)
-    table_uuid = create_unique_table_name("test_frame_roundtrip")
+    table_uuid = "table_"+create_uuid("test_frame_roundtrip")
     if sql.has_table(table_uuid, conn):
         with sql.SQLDatabase(conn, need_transaction=True) as pandasSQL:
             pandasSQL.drop_table(table_uuid)
@@ -1858,7 +2147,7 @@ def test_api_roundtrip_chunksize(conn, request, test_frame1):
             pytest.mark.xfail(reason="chunksize argument NotImplemented with ADBC")
         )
     conn = request.getfixturevalue(conn)
-    table_uuid = create_unique_table_name("test_frame_roundtrip")
+    table_uuid = "table_"+create_uuid("test_frame_roundtrip")
     if sql.has_table(table_uuid, conn):
         with sql.SQLDatabase(conn, need_transaction=True) as pandasSQL:
             pandasSQL.drop_table(table_uuid)
@@ -1874,12 +2163,15 @@ def test_api_roundtrip_chunksize(conn, request, test_frame1):
     tm.assert_frame_equal(result, test_frame1)
 
 
-@pytest.mark.parametrize("conn", all_connectable_iris)
-def test_api_execute_sql(conn, request):
+@pytest.mark.parametrize("iris_connect_and_per_test_id", setup(all_connectable_iris), indirect = True)
+def test_api_execute_sql(iris_connect_and_per_test_id, request):
     # drop_sql = "DROP TABLE IF EXISTS test"  # should already be done
-    conn = request.getfixturevalue(conn)
+    conn = iris_connect_and_per_test_id['conn']
+    iris_uuid = iris_connect_and_per_test_id['iris_table_uuid']
+    conn_name = iris_connect_and_per_test_id['conn_name']
+
     with sql.pandasSQL_builder(conn) as pandas_sql:
-        iris_results = pandas_sql.execute("SELECT * FROM iris")
+        iris_results = pandas_sql.execute(f"SELECT * FROM {iris_uuid}")
         row = iris_results.fetchone()
         iris_results.close()
     assert list(row) == [5.1, 3.5, 1.4, 0.2, "Iris-setosa"]
@@ -2018,7 +2310,7 @@ def test_api_timedelta(conn, request):
     # see #6921
     conn_name = conn
     conn = request.getfixturevalue(conn)
-    table_uuid = create_unique_table_name("test_timedelta")
+    table_uuid = "table_"+create_uuid("test_timedelta")
     if sql.has_table(table_uuid, conn):
         with sql.SQLDatabase(conn, need_transaction=True) as pandasSQL:
             pandasSQL.drop_table(table_uuid)
@@ -2065,7 +2357,7 @@ def test_api_timedelta(conn, request):
 def test_api_complex_raises(conn, request):
     conn_name = conn
     conn = request.getfixturevalue(conn)
-    table_uuid = create_unique_table_name("test_complex")
+    table_uuid = "table_"+create_uuid("test_complex")
     df = DataFrame({"a": [1 + 1j, 2j]})
 
     if "adbc" in conn_name:
@@ -2100,7 +2392,7 @@ def test_api_to_sql_index_label(conn, request, index_name, index_label, expected
             pytest.mark.xfail(reason="index_label argument NotImplemented with ADBC")
         )
     conn = request.getfixturevalue(conn)
-    table_uuid = create_unique_table_name("test_index_label")
+    table_uuid = "table_"+create_uuid("test_index_label")
     if sql.has_table(table_uuid, conn):
         with sql.SQLDatabase(conn, need_transaction=True) as pandasSQL:
             pandasSQL.drop_table(table_uuid)
@@ -2128,7 +2420,7 @@ def test_api_to_sql_index_label_multiindex(conn, request):
         )
 
     conn = request.getfixturevalue(conn)
-    table_uuid = create_unique_table_name("test_index_label")
+    table_uuid = "table_"+create_uuid("test_index_label")
     if sql.has_table(table_uuid, conn):
         with sql.SQLDatabase(conn, need_transaction=True) as pandasSQL:
             pandasSQL.drop_table(table_uuid)
@@ -2191,7 +2483,7 @@ def test_api_to_sql_index_label_multiindex(conn, request):
 @pytest.mark.parametrize("conn", all_connectable)
 def test_api_multiindex_roundtrip(conn, request):
     conn = request.getfixturevalue(conn)
-    table_uuid = create_unique_table_name("test_multiindex_roundtrip")
+    table_uuid = "table_"+create_uuid("test_multiindex_roundtrip")
     if sql.has_table(table_uuid, conn):
         with sql.SQLDatabase(conn, need_transaction=True) as pandasSQL:
             pandasSQL.drop_table(table_uuid)
@@ -2223,7 +2515,7 @@ def test_api_dtype_argument(conn, request, dtype):
     # GH10285 Add dtype argument to read_sql_query
     conn_name = conn
     conn = request.getfixturevalue(conn)
-    table_uuid = create_unique_table_name("test_dtype_argument")
+    table_uuid = "table_"+create_uuid("test_dtype_argument")
     if sql.has_table(table_uuid, conn):
         with sql.SQLDatabase(conn, need_transaction=True) as pandasSQL:
             pandasSQL.drop_table(table_uuid)
@@ -2245,7 +2537,7 @@ def test_api_dtype_argument(conn, request, dtype):
 @pytest.mark.parametrize("conn", all_connectable)
 def test_api_integer_col_names(conn, request):
     conn = request.getfixturevalue(conn)
-    table_uuid = create_unique_table_name("test_frame_integer_col_names")
+    table_uuid = "table_"+create_uuid("test_frame_integer_col_names")
     df = DataFrame([[1, 2], [3, 4]], columns=[0, 1])
     sql.to_sql(df, table_uuid, conn, if_exists="replace")
 
@@ -2260,7 +2552,7 @@ def test_api_get_schema(conn, request, test_frame1):
             )
         )
     conn = request.getfixturevalue(conn)
-    table_uuid = create_unique_table_name("test")
+    table_uuid = "table_"+create_uuid("test")
     create_sql = sql.get_schema(test_frame1, table_uuid, con=conn)
     assert "CREATE" in create_sql
 
@@ -2276,7 +2568,7 @@ def test_api_get_schema_with_schema(conn, request, test_frame1):
             )
         )
     conn = request.getfixturevalue(conn)
-    table_uuid = create_unique_table_name("test")
+    table_uuid = "table_"+create_uuid("test")
     create_sql = sql.get_schema(test_frame1, table_uuid, con=conn, schema="pypi")
     assert "CREATE TABLE pypi." in create_sql
 
@@ -2300,7 +2592,7 @@ def test_api_get_schema_dtypes(conn, request):
         from sqlalchemy import Integer
 
         dtype = Integer
-    table_uuid = create_unique_table_name("test")
+    table_uuid = "table_"+create_uuid("test")
     create_sql = sql.get_schema(float_frame, table_uuid, con=conn, dtype={"b": dtype})
     assert "CREATE" in create_sql
     assert "INTEGER" in create_sql
@@ -2318,7 +2610,7 @@ def test_api_get_schema_keys(conn, request, test_frame1):
     conn_name = conn
     conn = request.getfixturevalue(conn)
     frame = DataFrame({"Col1": [1.1, 1.2], "Col2": [2.1, 2.2]})
-    table_uuid = create_unique_table_name("test")
+    table_uuid = "table_"+create_uuid("test")
     create_sql = sql.get_schema(frame, table_uuid, con=conn, keys="Col1")
 
     if "mysql" in conn_name:
@@ -2344,7 +2636,7 @@ def test_api_chunksize_read(conn, request):
         )
     conn_name = conn
     conn = request.getfixturevalue(conn)
-    table_uuid = create_unique_table_name("test_chunksize")
+    table_uuid = "table_"+create_uuid("test_chunksize")
     if sql.has_table(table_uuid, conn):
         with sql.SQLDatabase(conn, need_transaction=True) as pandasSQL:
             pandasSQL.drop_table(table_uuid)
@@ -2400,7 +2692,7 @@ def test_api_categorical(conn, request):
     # GH8624
     # test that categorical gets written correctly as dense column
     conn = request.getfixturevalue(conn)
-    table_uuid = create_unique_table_name("test_categorical")
+    table_uuid = "table_"+create_uuid("test_categorical")
     if sql.has_table(table_uuid, conn):
         with sql.SQLDatabase(conn, need_transaction=True) as pandasSQL:
             pandasSQL.drop_table(table_uuid)
@@ -2424,7 +2716,7 @@ def test_api_categorical(conn, request):
 def test_api_unicode_column_name(conn, request):
     # GH 11431
     conn = request.getfixturevalue(conn)
-    table_uuid = create_unique_table_name("test_unicode")
+    table_uuid = "table_"+create_uuid("test_unicode")
     if sql.has_table(table_uuid, conn):
         with sql.SQLDatabase(conn, need_transaction=True) as pandasSQL:
             pandasSQL.drop_table(table_uuid)
@@ -2438,7 +2730,7 @@ def test_api_escaped_table_name(conn, request):
     # GH 13206
     conn_name = conn
     conn = request.getfixturevalue(conn)
-    table_uuid = create_unique_table_name("d1187b08-4943-4c8d-a7f6")
+    table_uuid = "table_"+create_uuid("d1187b08-4943-4c8d-a7f6")
     if sql.has_table(table_uuid, conn):
         with sql.SQLDatabase(conn, need_transaction=True) as pandasSQL:
             pandasSQL.drop_table(table_uuid)
@@ -2470,7 +2762,7 @@ def test_api_read_sql_duplicate_columns(conn, request):
                 )
             )
     conn = request.getfixturevalue(conn)
-    table_uuid = create_unique_table_name("test_table")
+    table_uuid = "table_"+create_uuid("test_table")
     if sql.has_table(table_uuid, conn):
         with sql.SQLDatabase(conn, need_transaction=True) as pandasSQL:
             pandasSQL.drop_table(table_uuid)
@@ -2494,7 +2786,7 @@ def test_read_table_columns(conn, request, test_frame1):
         request.applymarker(pytest.mark.xfail(reason="Not Implemented"))
 
     conn = request.getfixturevalue(conn)
-    table_uuid = create_unique_table_name("test_frame")
+    table_uuid = "table_"+create_uuid("test_frame")
     sql.to_sql(test_frame1, table_uuid, conn)
 
     cols = ["A", "B"]
@@ -2511,7 +2803,7 @@ def test_read_table_index_col(conn, request, test_frame1):
         request.applymarker(pytest.mark.xfail(reason="Not Implemented"))
 
     conn = request.getfixturevalue(conn)
-    table_uuid = create_unique_table_name("test_frame")
+    table_uuid = "table_"+create_uuid("test_frame")
     sql.to_sql(test_frame1, table_uuid, conn)
 
     result = sql.read_sql_table(table_uuid, conn, index_col="index")
@@ -2527,22 +2819,26 @@ def test_read_table_index_col(conn, request, test_frame1):
     assert result.columns.tolist() == ["C", "D"]
 
 
-@pytest.mark.parametrize("conn", all_connectable_iris)
-def test_read_sql_delegate(conn, request):
-    if conn == "sqlite_buildin_iris":
+@pytest.mark.parametrize("iris_connect_and_per_test_id", setup(all_connectable_iris), indirect = True)
+def test_read_sql_delegate(iris_connect_and_per_test_id, request):
+    conn = iris_connect_and_per_test_id['conn']
+    iris_uuid = iris_connect_and_per_test_id['iris_table_uuid']
+    conn_name = iris_connect_and_per_test_id['conn_name']
+
+    if conn_name == "sqlite_buildin_iris":
         request.applymarker(
             pytest.mark.xfail(
                 reason="sqlite_buildin connection does not implement read_sql_table"
             )
         )
 
-    conn = request.getfixturevalue(conn)
-    iris_frame1 = sql.read_sql_query("SELECT * FROM iris", conn)
-    iris_frame2 = sql.read_sql("SELECT * FROM iris", conn)
+
+    iris_frame1 = sql.read_sql_query(f"SELECT * FROM {iris_table}", conn)
+    iris_frame2 = sql.read_sql(f"SELECT * FROM {iris_table}", conn)
     tm.assert_frame_equal(iris_frame1, iris_frame2)
 
-    iris_frame1 = sql.read_sql_table("iris", conn)
-    iris_frame2 = sql.read_sql("iris", conn)
+    iris_frame1 = sql.read_sql_table(iris_table, conn)
+    iris_frame2 = sql.read_sql(iris_table, conn)
     tm.assert_frame_equal(iris_frame1, iris_frame2)
 
 
@@ -2551,8 +2847,8 @@ def test_not_reflect_all_tables(sqlite_conn):
     from sqlalchemy import text
     from sqlalchemy.engine import Engine
 
-    invalid_uuid = create_unique_table_name("invalid")
-    other_uuid = create_unique_table_name("other_table")
+    invalid_uuid = create_uuid("invalid")
+    other_uuid = create_uuid("other_table")
 
     # create invalid table
     query_list = [
@@ -2581,7 +2877,7 @@ def test_warning_case_insensitive_table_name(conn, request, test_frame1):
         request.applymarker(pytest.mark.xfail(reason="Does not raise warning"))
 
     conn = request.getfixturevalue(conn)
-    table_uuid = create_unique_table_name("table")
+    table_uuid = "table_"+create_uuid("table")
     table_uuid_upper = table_uuid.upper()
     # see gh-7815
     with tm.assert_produces_warning(
@@ -2597,7 +2893,7 @@ def test_warning_case_insensitive_table_name(conn, request, test_frame1):
 
     # Test that the warning is certainly NOT triggered in a normal case.
     with tm.assert_produces_warning(None):
-        case_sensitive_uuid = create_unique_table_name("CaseSensitive")
+        case_sensitive_uuid = create_uuid("CaseSensitive")
         test_frame1.to_sql(name=case_sensitive_uuid, con=conn)
 
 
@@ -2610,7 +2906,7 @@ def test_sqlalchemy_type_mapping(conn, request):
     df = DataFrame(
         {"time": to_datetime(["2014-12-12 01:54", "2014-12-11 02:54"], utc=True)}
     )
-    table_uuid = create_unique_table_name("test_type")
+    table_uuid = "table_"+create_uuid("test_type")
     with sql.SQLDatabase(conn) as db:
         table = sql.SQLTable(table_uuid, db, frame=df)
         # GH 9086: TIMESTAMP is the suggested type for datetimes with timezones
@@ -2642,7 +2938,7 @@ def test_sqlalchemy_integer_mapping(conn, request, integer, expected):
     # GH35076 Map pandas integer to optimal SQLAlchemy integer type
     conn = request.getfixturevalue(conn)
     df = DataFrame([0, 1], columns=["a"], dtype=integer)
-    table_uuid = create_unique_table_name("test_type")
+    table_uuid = "table_"+create_uuid("test_type")
     with sql.SQLDatabase(conn) as db:
         table = sql.SQLTable(table_uuid, db, frame=df)
 
@@ -2656,7 +2952,7 @@ def test_sqlalchemy_integer_overload_mapping(conn, request, integer):
     conn = request.getfixturevalue(conn)
     # GH35076 Map pandas integer to optimal SQLAlchemy integer type
     df = DataFrame([0, 1], columns=["a"], dtype=integer)
-    table_uuid = create_unique_table_name("test_type")
+    table_uuid = "table_"+create_uuid("test_type")
     with sql.SQLDatabase(conn) as db:
         with pytest.raises(
             ValueError, match="Unsigned 64 bit integer datatype is not supported"
@@ -2674,7 +2970,7 @@ def test_database_uri_string(conn, request, test_frame1):
     # "iris": syntax error [SQL: 'iris']
     with tm.ensure_clean() as name:
         db_uri = "sqlite:///" + name
-        table_uuid = create_unique_table_name("iris")
+        table_uuid = "table_"+create_uuid("iris")
         test_frame1.to_sql(
             name=table_uuid, con=db_uri, if_exists="replace", index=False
         )
@@ -2695,37 +2991,41 @@ def test_pg8000_sqlalchemy_passthrough_error(conn, request):
     # using driver that will not be installed on CI to trigger error
     # in sqlalchemy.create_engine -> test passing of this error to user
     db_uri = "postgresql+pg8000://user:pass@host/dbname"
-    table_uuid = create_unique_table_name("table")
+    table_uuid = "table_"+create_uuid("table")
     with pytest.raises(ImportError, match="pg8000"):
         sql.read_sql(f"select * from {table_uuid}", db_uri)
 
 
-@pytest.mark.parametrize("conn", sqlalchemy_connectable_iris)
-def test_query_by_text_obj(conn, request):
+@pytest.mark.parametrize("iris_connect_and_per_test_id", setup(sqlalchemy_connectable_iris), indirect = True)
+def test_query_by_text_obj(iris_connect_and_per_test_id, request):
     # WIP : GH10846
-    conn_name = conn
-    conn = request.getfixturevalue(conn)
+    conn = iris_connect_and_per_test_id['conn']
+    iris_uuid = iris_connect_and_per_test_id['iris_table_uuid']
+    conn_name = iris_connect_and_per_test_id['conn_name']
+
     from sqlalchemy import text
 
     if "postgres" in conn_name:
-        name_text = text('select * from iris where "Name"=:name')
+        name_text = text(f'select * from {iris_uuid} where "Name"=:name')
     else:
-        name_text = text("select * from iris where name=:name")
+        name_text = text(f"select * from {iris_uuid} where name=:name")
     iris_df = sql.read_sql(name_text, conn, params={"name": "Iris-versicolor"})
     all_names = set(iris_df["Name"])
     assert all_names == {"Iris-versicolor"}
 
 
-@pytest.mark.parametrize("conn", sqlalchemy_connectable_iris)
-def test_query_by_select_obj(conn, request):
-    conn = request.getfixturevalue(conn)
+@pytest.mark.parametrize("iris_connect_and_per_test_id", setup(sqlalchemy_connectable_iris), indirect = True)
+def test_query_by_select_obj(iris_connect_and_per_test_id, request):
+    conn = iris_connect_and_per_test_id['conn']
+    iris_uuid = iris_connect_and_per_test_id['iris_table_uuid']
+    conn_name = iris_connect_and_per_test_id['conn_name']
     # WIP : GH10846
     from sqlalchemy import (
         bindparam,
         select,
     )
 
-    iris = iris_table_metadata()
+    iris = iris_table_metadata(iris_uuid)
     name_select = select(iris).where(iris.c.Name == bindparam("name"))
     iris_df = sql.read_sql(name_select, conn, params={"name": "Iris-setosa"})
     all_names = set(iris_df["Name"])
@@ -2740,7 +3040,7 @@ def test_column_with_percentage(conn, request):
         request.applymarker(pytest.mark.xfail(reason="Not Implemented"))
 
     conn = request.getfixturevalue(conn)
-    table_uuid = create_unique_table_name("test_column_percentage")
+    table_uuid = "table_"+create_uuid("test_column_percentage")
     df = DataFrame({"A": [0, 1, 2], "%_variation": [3, 4, 5]})
     df.to_sql(name=table_uuid, con=conn, index=False)
 
@@ -2754,7 +3054,7 @@ def test_sql_open_close(test_frame3):
     # between the writing and reading (as in many real situations).
 
     with tm.ensure_clean() as name:
-        table_uuid = create_unique_table_name("test_frame3_legacy")
+        table_uuid = "table_"+create_uuid("test_frame3_legacy")
         with closing(sqlite3.connect(name)) as conn:
             assert sql.to_sql(test_frame3, table_uuid, conn, index=False) == 4
 
@@ -2834,7 +3134,7 @@ def test_create_table(conn, request):
     from sqlalchemy import inspect
 
     temp_frame = DataFrame({"one": [1.0, 2.0, 3.0, 4.0], "two": [4.0, 3.0, 2.0, 1.0]})
-    table_uuid = create_unique_table_name("temp_frame")
+    table_uuid = "table_"+create_uuid("temp_frame")
     with sql.SQLDatabase(conn, need_transaction=True) as pandasSQL:
         assert pandasSQL.to_sql(temp_frame, table_uuid) == 4
 
@@ -2856,7 +3156,7 @@ def test_drop_table(conn, request):
     from sqlalchemy import inspect
 
     temp_frame = DataFrame({"one": [1.0, 2.0, 3.0, 4.0], "two": [4.0, 3.0, 2.0, 1.0]})
-    table_uuid = create_unique_table_name("temp_frame")
+    table_uuid = "table_"+create_uuid("temp_frame")
     with sql.SQLDatabase(conn) as pandasSQL:
         with pandasSQL.run_transaction():
             assert pandasSQL.to_sql(temp_frame, table_uuid) == 4
@@ -2880,7 +3180,7 @@ def test_roundtrip(conn, request, test_frame1):
 
     conn_name = conn
     conn = request.getfixturevalue(conn)
-    table_uuid = create_unique_table_name("test_frame_roundtrip")
+    table_uuid = "table_"+create_uuid("test_frame_roundtrip")
     pandasSQL = pandasSQL_builder(conn)
     with pandasSQL.run_transaction():
         assert pandasSQL.to_sql(test_frame1, table_uuid) == 4
@@ -2896,36 +3196,48 @@ def test_roundtrip(conn, request, test_frame1):
     tm.assert_frame_equal(result, test_frame1)
 
 
-@pytest.mark.parametrize("conn", all_connectable_iris)
-def test_execute_sql(conn, request):
-    conn = request.getfixturevalue(conn)
+@pytest.mark.parametrize("iris_connect_and_per_test_id", setup(all_connectable_iris), indirect = True)
+def test_execute_sql(iris_connect_and_per_test_id, request):
+    conn = iris_connect_and_per_test_id['conn']
+    iris_uuid = iris_connect_and_per_test_id['iris_table_uuid']
+    conn_name = iris_connect_and_per_test_id['conn_name']
+
     with pandasSQL_builder(conn) as pandasSQL:
         with pandasSQL.run_transaction():
-            iris_results = pandasSQL.execute("SELECT * FROM iris")
+            iris_results = pandasSQL.execute(f"SELECT * FROM {iris_uuid}")
             row = iris_results.fetchone()
             iris_results.close()
     assert list(row) == [5.1, 3.5, 1.4, 0.2, "Iris-setosa"]
 
 
-@pytest.mark.parametrize("conn", sqlalchemy_connectable_iris)
-def test_sqlalchemy_read_table(conn, request):
-    conn = request.getfixturevalue(conn)
-    iris_frame = sql.read_sql_table("iris", con=conn)
+@pytest.mark.parametrize("iris_connect_and_per_test_id", setup(sqlalchemy_connectable_iris), indirect = True)
+def test_sqlalchemy_read_table(iris_connect_and_per_test_id, request):
+    conn = iris_connect_and_per_test_id['conn']
+    iris_uuid = iris_connect_and_per_test_id['iris_table_uuid']
+    conn_name = iris_connect_and_per_test_id['conn_name']
+
+    iris_frame = sql.read_sql_table(iris_uuid, con=conn)
     check_iris_frame(iris_frame)
 
 
-@pytest.mark.parametrize("conn", sqlalchemy_connectable_iris)
-def test_sqlalchemy_read_table_columns(conn, request):
-    conn = request.getfixturevalue(conn)
+@pytest.mark.parametrize("iris_connect_and_per_test_id", setup(sqlalchemy_connectable_iris), indirect = True)
+def test_sqlalchemy_read_table_columns(iris_connect_and_per_test_id, request):
+    conn = iris_connect_and_per_test_id['conn']
+    iris_uuid = iris_connect_and_per_test_id['iris_table_uuid']
+    conn_name = iris_connect_and_per_test_id['conn_name']
+
     iris_frame = sql.read_sql_table(
-        "iris", con=conn, columns=["SepalLength", "SepalLength"]
+        iris_uuid, con=conn, columns=["SepalLength", "SepalLength"]
     )
     tm.assert_index_equal(iris_frame.columns, Index(["SepalLength", "SepalLength__1"]))
 
 
-@pytest.mark.parametrize("conn", sqlalchemy_connectable_iris)
-def test_read_table_absent_raises(conn, request):
-    conn = request.getfixturevalue(conn)
+@pytest.mark.parametrize("iris_connect_and_per_test_id", setup(sqlalchemy_connectable_iris), indirect = True)
+def test_read_table_absent_raises(iris_connect_and_per_test_id, request):
+    conn = iris_connect_and_per_test_id['conn']
+    iris_uuid = iris_connect_and_per_test_id['iris_table_uuid']
+    conn_name = iris_connect_and_per_test_id['conn_name']
+
     msg = "Table this_doesnt_exist not found"
     with pytest.raises(ValueError, match=msg):
         sql.read_sql_table("this_doesnt_exist", con=conn)
@@ -2958,7 +3270,7 @@ def test_sqlalchemy_default_type_conversion(conn, request):
 def test_bigint(conn, request):
     # int64 should be converted to BigInteger, GH7433
     conn = request.getfixturevalue(conn)
-    table_uuid = create_unique_table_name("test_bigint")
+    table_uuid = "table_"+create_uuid("test_bigint")
     df = DataFrame(data={"i64": [2**62]})
     assert df.to_sql(name=table_uuid, con=conn, index=False) == 1
     result = sql.read_sql_table(table_uuid, conn)
@@ -2989,7 +3301,7 @@ def test_datetime_with_timezone_query(conn, request, parse_dates):
     # to datetime64[ns,psycopg2.tz.FixedOffsetTimezone..], which is ok
     # but should be more natural, so coerce to datetime64[ns] for now
     conn = request.getfixturevalue(conn)
-    table_uuid = create_unique_table_name("datetz")
+    table_uuid = "table_"+create_uuid("datetz")
     expected = create_and_load_postgres_datetz(conn, table_uuid)
 
     # GH11216
@@ -3001,7 +3313,7 @@ def test_datetime_with_timezone_query(conn, request, parse_dates):
 @pytest.mark.parametrize("conn", postgresql_connectable)
 def test_datetime_with_timezone_query_chunksize(conn, request):
     conn = request.getfixturevalue(conn)
-    table_uuid = create_unique_table_name("datetz")
+    table_uuid = "table_"+create_uuid("datetz")
     expected = create_and_load_postgres_datetz(conn, table_uuid)
 
     df = concat(
@@ -3015,7 +3327,7 @@ def test_datetime_with_timezone_query_chunksize(conn, request):
 @pytest.mark.parametrize("conn", postgresql_connectable)
 def test_datetime_with_timezone_table(conn, request):
     conn = request.getfixturevalue(conn)
-    table_uuid = create_unique_table_name("datetz")
+    table_uuid = "table_"+create_uuid("datetz")
     expected = create_and_load_postgres_datetz(conn, table_uuid)
     result = sql.read_sql_table(table_uuid, conn)
 
@@ -3027,7 +3339,7 @@ def test_datetime_with_timezone_table(conn, request):
 def test_datetime_with_timezone_roundtrip(conn, request):
     conn_name = conn
     conn = request.getfixturevalue(conn)
-    table_uuid = create_unique_table_name("test_datetime_tz")
+    table_uuid = "table_"+create_uuid("test_datetime_tz")
     # GH 9086
     # Write datetimetz data to a db and read it back
     # For dbs that support timestamps with timezones, should get back UTC
@@ -3059,7 +3371,7 @@ def test_datetime_with_timezone_roundtrip(conn, request):
 def test_out_of_bounds_datetime(conn, request):
     # GH 26761
     conn = request.getfixturevalue(conn)
-    table_uuid = create_unique_table_name("test_datetime_obb")
+    table_uuid = "table_"+create_uuid("test_datetime_obb")
     data = DataFrame({"date": datetime(9999, 1, 1)}, index=[0])
     assert data.to_sql(name=table_uuid, con=conn, index=False) == 1
     result = sql.read_sql_table(table_uuid, conn)
@@ -3074,7 +3386,7 @@ def test_naive_datetimeindex_roundtrip(conn, request):
     # GH 23510
     # Ensure that a naive DatetimeIndex isn't converted to UTC
     conn = request.getfixturevalue(conn)
-    table_uuid = create_unique_table_name("foo_table")
+    table_uuid = "table_"+create_uuid("foo_table")
     dates = date_range("2018-01-01", periods=5, freq="6h", unit="us")._with_freq(None)
     expected = DataFrame({"nums": range(5)}, index=dates)
     assert expected.to_sql(name=table_uuid, con=conn, index_label="info_date") == 5
@@ -3119,7 +3431,7 @@ def test_date_parsing(conn, request):
 def test_datetime(conn, request):
     conn_name = conn
     conn = request.getfixturevalue(conn)
-    table_uuid = create_unique_table_name("test_datetime")
+    table_uuid = "table_"+create_uuid("test_datetime")
     df = DataFrame(
         {"A": date_range("2013-01-01 09:00:00", periods=3), "B": np.arange(3.0)}
     )
@@ -3146,7 +3458,7 @@ def test_datetime(conn, request):
 def test_datetime_NaT(conn, request):
     conn_name = conn
     conn = request.getfixturevalue(conn)
-    table_uuid = create_unique_table_name("test_datetime")
+    table_uuid = "table_"+create_uuid("test_datetime")
     df = DataFrame(
         {"A": date_range("2013-01-01 09:00:00", periods=3), "B": np.arange(3.0)}
     )
@@ -3172,7 +3484,7 @@ def test_datetime_NaT(conn, request):
 def test_datetime_date(conn, request):
     # test support for datetime.date
     conn = request.getfixturevalue(conn)
-    table_uuid = create_unique_table_name("test_date")
+    table_uuid = "table_"+create_uuid("test_date")
     df = DataFrame([date(2014, 1, 1), date(2014, 1, 2)], columns=["a"])
     assert df.to_sql(name=table_uuid, con=conn, index=False) == 2
     res = read_sql_table(table_uuid, conn)
@@ -3187,9 +3499,9 @@ def test_datetime_time(conn, request, sqlite_buildin):
     # test support for datetime.time
     conn_name = conn
     conn = request.getfixturevalue(conn)
-    table_uuid = create_unique_table_name("test_time")
-    table_uuid2 = create_unique_table_name("test_time2")
-    table_uuid3 = create_unique_table_name("test_time3")
+    table_uuid = create_uuid("test_time")
+    table_uuid2 = create_uuid("test_time2")
+    table_uuid3 = create_uuid("test_time3")
     df = DataFrame([time(9, 0, 0), time(9, 1, 30)], columns=["a"])
     assert df.to_sql(name=table_uuid, con=conn, index=False) == 2
     res = read_sql_table(table_uuid, conn)
@@ -3216,7 +3528,7 @@ def test_datetime_time(conn, request, sqlite_buildin):
 def test_mixed_dtype_insert(conn, request):
     # see GH6509
     conn = request.getfixturevalue(conn)
-    table_uuid = create_unique_table_name("test_read_write")
+    table_uuid = "table_"+create_uuid("test_read_write")
     s1 = Series(2**25 + 1, dtype=np.int32)
     s2 = Series(0.0, dtype=np.float32)
     df = DataFrame({"s1": s1, "s2": s2})
@@ -3232,7 +3544,7 @@ def test_mixed_dtype_insert(conn, request):
 def test_nan_numeric(conn, request):
     # NaNs in numeric float column
     conn = request.getfixturevalue(conn)
-    table_uuid = create_unique_table_name("test_nan")
+    table_uuid = "table_"+create_uuid("test_nan")
     df = DataFrame({"A": [0, 1, 2], "B": [0.2, np.nan, 5.6]})
     assert df.to_sql(name=table_uuid, con=conn, index=False) == 3
 
@@ -3249,7 +3561,7 @@ def test_nan_numeric(conn, request):
 def test_nan_fullcolumn(conn, request):
     # full NaN column (numeric float column)
     conn = request.getfixturevalue(conn)
-    table_uuid = create_unique_table_name("test_nan")
+    table_uuid = "table_"+create_uuid("test_nan")
     df = DataFrame({"A": [0, 1, 2], "B": [np.nan, np.nan, np.nan]})
     assert df.to_sql(name=table_uuid, con=conn, index=False) == 3
 
@@ -3268,7 +3580,7 @@ def test_nan_fullcolumn(conn, request):
 def test_nan_string(conn, request):
     # NaNs in string column
     conn = request.getfixturevalue(conn)
-    table_uuid = create_unique_table_name("test_nan")
+    table_uuid = "table_"+create_uuid("test_nan")
     df = DataFrame({"A": [0, 1, 2], "B": ["a", "b", np.nan]})
     assert df.to_sql(name=table_uuid, con=conn, index=False) == 3
 
@@ -3298,7 +3610,7 @@ def test_to_sql_save_index(conn, request):
         [(1, 2.1, "line1"), (2, 1.5, "line2")], columns=["A", "B", "C"], index=["A"]
     )
 
-    tbl_name = create_unique_table_name("test_to_sql_saves_index")
+    tbl_name = create_uuid("test_to_sql_saves_index")
     with pandasSQL_builder(conn) as pandasSQL:
         with pandasSQL.run_transaction():
             assert pandasSQL.to_sql(df, tbl_name) == 2
@@ -3328,7 +3640,7 @@ def test_to_sql_save_index(conn, request):
 def test_transactions(conn, request):
     conn_name = conn
     conn = request.getfixturevalue(conn)
-    table_uuid = create_unique_table_name("test_trans")
+    table_uuid = "table_"+create_uuid("test_trans")
 
     stmt = f"CREATE TABLE {table_uuid} (A INT, B TEXT)"
     if conn_name != "sqlite_buildin" and "adbc" not in conn_name:
@@ -3345,7 +3657,7 @@ def test_transactions(conn, request):
 def test_transaction_rollback(conn, request):
     conn_name = conn
     conn = request.getfixturevalue(conn)
-    table_uuid = create_unique_table_name("test_trans")
+    table_uuid = "table_"+create_uuid("test_trans")
 
     with pandasSQL_builder(conn) as pandasSQL:
         with pandasSQL.run_transaction() as trans:
@@ -3400,7 +3712,7 @@ def test_get_schema_create_table(conn, request, test_frame3):
     from sqlalchemy import text
     from sqlalchemy.engine import Engine
 
-    tbl = create_unique_table_name("test_get_schema_create_table")
+    tbl = create_uuid("test_get_schema_create_table")
     create_sql = sql.get_schema(test_frame3, tbl, con=conn)
     blank_test_df = test_frame3.iloc[:0]
 
@@ -3432,11 +3744,11 @@ def test_dtype(conn, request):
     data = [(0.8, True), (0.9, None)]
     df = DataFrame(data, columns=cols)
 
-    table_uuid1 = create_unique_table_name("dtype_test")
-    table_uuid2 = create_unique_table_name("dtype_test2")
-    table_uuid3 = create_unique_table_name("dtype_test3")
-    table_uuid_single = create_unique_table_name("single_dtype_test")
-    error_table = create_unique_table_name("error")
+    table_uuid1 = create_uuid("dtype_test")
+    table_uuid2 = create_uuid("dtype_test2")
+    table_uuid3 = create_uuid("dtype_test3")
+    table_uuid_single = create_uuid("single_dtype_test")
+    error_table = create_uuid("error")
 
     assert df.to_sql(name=table_uuid1, con=conn) == 2
     assert df.to_sql(name=table_uuid2, con=conn, dtype={"B": TEXT}) == 2
@@ -3488,7 +3800,7 @@ def test_notna_dtype(conn, request):
     }
     df = DataFrame(cols)
 
-    tbl = create_unique_table_name("notna_dtype_test")
+    tbl = "table_"+create_uuid("notna_dtype_test")
     assert df.to_sql(name=tbl, con=conn) == 2
     _ = sql.read_sql_table(tbl, conn)
     meta = MetaData()
@@ -3527,7 +3839,7 @@ def test_double_precision(conn, request):
         }
     )
 
-    table_uuid = create_unique_table_name("test_dtypes")
+    table_uuid = "table_"+create_uuid("test_dtypes")
     assert (
         df.to_sql(
             name=table_uuid,
@@ -3557,7 +3869,7 @@ def test_double_precision(conn, request):
 @pytest.mark.parametrize("conn", sqlalchemy_connectable)
 def test_connectable_issue_example(conn, request):
     conn = request.getfixturevalue(conn)
-    table_uuid = create_unique_table_name("test_foo_data")
+    table_uuid = "table_"+create_uuid("test_foo_data")
 
     # This tests the example raised in issue
     # https://github.com/pandas-dev/pandas/issues/10104
@@ -3628,7 +3940,7 @@ def test_temporary_table(conn, request):
         pytest.skip("test does not work with str connection")
 
     conn = request.getfixturevalue(conn)
-    table_uuid = create_unique_table_name("temp_test")
+    table_uuid = "table_"+create_uuid("temp_test")
 
     from sqlalchemy import (
         Column,
@@ -3671,7 +3983,7 @@ def test_invalid_engine(conn, request, test_frame1):
         )
 
     conn = request.getfixturevalue(conn)
-    table_uuid = create_unique_table_name("test_frame1")
+    table_uuid = "table_"+create_uuid("test_frame1")
     msg = "engine must be one of 'auto', 'sqlalchemy'"
     with pandasSQL_builder(conn) as pandasSQL:
         with pytest.raises(ValueError, match=msg):
@@ -3683,7 +3995,7 @@ def test_to_sql_with_sql_engine(conn, request, test_frame1):
     """`to_sql` with the `engine` param"""
     # mostly copied from this class's `_to_sql()` method
     conn = request.getfixturevalue(conn)
-    table_uuid = create_unique_table_name("test_frame1")
+    table_uuid = "table_"+create_uuid("test_frame1")
     with pandasSQL_builder(conn) as pandasSQL:
         with pandasSQL.run_transaction():
             assert pandasSQL.to_sql(test_frame1, table_uuid, engine="auto") == 4
@@ -3698,7 +4010,7 @@ def test_to_sql_with_sql_engine(conn, request, test_frame1):
 def test_options_sqlalchemy(conn, request, test_frame1):
     # use the set option
     conn = request.getfixturevalue(conn)
-    table_uuid = create_unique_table_name("test_frame1")
+    table_uuid = "table_"+create_uuid("test_frame1")
     with pd.option_context("io.sql.engine", "sqlalchemy"):
         with pandasSQL_builder(conn) as pandasSQL:
             with pandasSQL.run_transaction():
@@ -3714,7 +4026,7 @@ def test_options_sqlalchemy(conn, request, test_frame1):
 def test_options_auto(conn, request, test_frame1):
     # use the set option
     conn = request.getfixturevalue(conn)
-    table_uuid = create_unique_table_name("test_frame1")
+    table_uuid = "table_"+create_uuid("test_frame1")
     with pd.option_context("io.sql.engine", "auto"):
         with pandasSQL_builder(conn) as pandasSQL:
             with pandasSQL.run_transaction():
@@ -3760,7 +4072,7 @@ def test_read_sql_dtype_backend(
     # GH#50048
     conn_name = conn
     conn = request.getfixturevalue(conn)
-    table = create_unique_table_name("test")
+    table = "table_"+create_uuid("test")
     df = dtype_backend_data
     df.to_sql(name=table, con=conn, index=False, if_exists="replace")
 
@@ -3813,7 +4125,7 @@ def test_read_sql_dtype_backend_table(
     # GH#50048
     conn_name = conn
     conn = request.getfixturevalue(conn)
-    table = create_unique_table_name("test")
+    table = "table_"+create_uuid("test")
     df = dtype_backend_data
     df.to_sql(name=table, con=conn, index=False, if_exists="replace")
 
@@ -3842,7 +4154,7 @@ def test_read_sql_dtype_backend_table(
 @pytest.mark.parametrize("func", ["read_sql", "read_sql_table", "read_sql_query"])
 def test_read_sql_invalid_dtype_backend_table(conn, request, func, dtype_backend_data):
     conn = request.getfixturevalue(conn)
-    table = create_unique_table_name("test")
+    table = "table_"+create_uuid("test")
     df = dtype_backend_data
     df.to_sql(name=table, con=conn, index=False, if_exists="replace")
 
@@ -3923,7 +4235,7 @@ def test_chunksize_empty_dtypes(conn, request):
             pytest.mark.xfail(reason="chunksize argument NotImplemented with ADBC")
         )
     conn = request.getfixturevalue(conn)
-    table_uuid = create_unique_table_name("test")
+    table_uuid = "table_"+create_uuid("test")
     dtypes = {"a": "int64", "b": "object"}
     df = DataFrame(columns=["a", "b"]).astype(dtypes)
     expected = df.copy()
@@ -3944,7 +4256,7 @@ def test_chunksize_empty_dtypes(conn, request):
 def test_read_sql_dtype(conn, request, func, dtype_backend):
     # GH#50797
     conn = request.getfixturevalue(conn)
-    table = create_unique_table_name("test")
+    table = "table_"+create_uuid("test")
     df = DataFrame({"a": [1, 2, 3], "b": 5})
     df.to_sql(name=table, con=conn, index=False, if_exists="replace")
 
@@ -3968,7 +4280,7 @@ def test_read_sql_dtype(conn, request, func, dtype_backend):
 
 def test_bigint_warning(sqlite_engine):
     conn = sqlite_engine
-    table_uuid = create_unique_table_name("test_bigintwarning")
+    table_uuid = "table_"+create_uuid("test_bigintwarning")
     # test no warning for BIGINT (to support int64) is raised (GH7433)
     df = DataFrame({"a": [1, 2]}, dtype="int64")
     assert df.to_sql(name=table_uuid, con=conn, index=False) == 2
@@ -3986,7 +4298,7 @@ def test_valueerror_exception(sqlite_engine):
 
 def test_row_object_is_named_tuple(sqlite_engine):
     conn = sqlite_engine
-    table_uuid = create_unique_table_name("test_frame")
+    table_uuid = "table_"+create_uuid("test_frame")
     # GH 40682
     # Test for the is_named_tuple() function
     # Placed here due to its usage of sqlalchemy
@@ -4026,7 +4338,7 @@ def test_row_object_is_named_tuple(sqlite_engine):
 def test_read_sql_string_inference(sqlite_engine):
     conn = sqlite_engine
     # GH#54430
-    table = create_unique_table_name("test")
+    table = "table_"+create_uuid("test")
     df = DataFrame({"a": ["x", "y"]})
     df.to_sql(table, con=conn, index=False, if_exists="replace")
 
@@ -4043,7 +4355,7 @@ def test_read_sql_string_inference(sqlite_engine):
 
 def test_roundtripping_datetimes(sqlite_engine):
     conn = sqlite_engine
-    table_uuid = create_unique_table_name("test")
+    table_uuid = "table_"+create_uuid("test")
     # GH#54877
     df = DataFrame({"t": [datetime(2020, 12, 31, 12)]}, dtype="datetime64[ns]")
     df.to_sql(table_uuid, conn, if_exists="replace", index=False)
@@ -4063,7 +4375,7 @@ def sqlite_builtin_detect_types():
 def test_roundtripping_datetimes_detect_types(sqlite_builtin_detect_types):
     # https://github.com/pandas-dev/pandas/issues/55554
     conn = sqlite_builtin_detect_types
-    table_uuid = create_unique_table_name("test")
+    table_uuid = "table_"+create_uuid("test")
     df = DataFrame({"t": [datetime(2020, 12, 31, 12)]}, dtype="datetime64[ns]")
     df.to_sql(table_uuid, conn, if_exists="replace", index=False)
     result = pd.read_sql(f"select * from {table_uuid}", conn).iloc[0, 0]
@@ -4084,11 +4396,11 @@ def test_psycopg2_schema_support(postgresql_psycopg2_engine):
             con.exec_driver_sql("DROP SCHEMA IF EXISTS other CASCADE;")
             con.exec_driver_sql("CREATE SCHEMA other;")
 
-    schema_public_uuid = create_unique_table_name("test_schema_public")
-    schema_public_explicit_uuid = create_unique_table_name(
+    schema_public_uuid = create_uuid("test_schema_public")
+    schema_public_explicit_uuid = create_uuid(
         "test_schema_public_explicit"
     )
-    schema_other_uuid = create_unique_table_name("test_schema_other")
+    schema_other_uuid = create_uuid("test_schema_other")
 
     # write dataframe to different schema's
     assert df.to_sql(name=schema_public_uuid, con=conn, index=False) == 2
@@ -4153,7 +4465,7 @@ def test_self_join_date_columns(postgresql_psycopg2_engine):
     conn = postgresql_psycopg2_engine
     from sqlalchemy.sql import text
 
-    tb = create_unique_table_name("person")
+    tb = "table_"+create_uuid("person")
 
     create_table = text(
         f"""
@@ -4186,7 +4498,7 @@ def test_self_join_date_columns(postgresql_psycopg2_engine):
 
 def test_create_and_drop_table(sqlite_engine):
     conn = sqlite_engine
-    table_uuid = create_unique_table_name("drop_test_frame")
+    table_uuid = "table_"+create_uuid("drop_test_frame")
     temp_frame = DataFrame({"one": [1.0, 2.0, 3.0, 4.0], "two": [4.0, 3.0, 2.0, 1.0]})
     with sql.SQLDatabase(conn) as pandasSQL:
         with pandasSQL.run_transaction():
@@ -4202,7 +4514,7 @@ def test_create_and_drop_table(sqlite_engine):
 
 def test_sqlite_datetime_date(sqlite_buildin):
     conn = sqlite_buildin
-    table_uuid = create_unique_table_name("test_date")
+    table_uuid = "table_"+create_uuid("test_date")
     df = DataFrame([date(2014, 1, 1), date(2014, 1, 2)], columns=["a"])
     assert df.to_sql(name=table_uuid, con=conn, index=False) == 2
     res = read_sql_query(f"SELECT * FROM {table_uuid}", conn)
@@ -4213,7 +4525,7 @@ def test_sqlite_datetime_date(sqlite_buildin):
 @pytest.mark.parametrize("tz_aware", [False, True])
 def test_sqlite_datetime_time(tz_aware, sqlite_buildin):
     conn = sqlite_buildin
-    table_uuid = create_unique_table_name("test_time")
+    table_uuid = "table_"+create_uuid("test_time")
     # test support for datetime.time, GH #8341
     if not tz_aware:
         tz_times = [time(9, 0, 0), time(9, 1, 30)]
@@ -4240,10 +4552,10 @@ def get_sqlite_column_type(conn, table, column):
 
 def test_sqlite_test_dtype(sqlite_buildin):
     conn = sqlite_buildin
-    table_uuid = create_unique_table_name("dtype_test")
-    table_uuid2 = create_unique_table_name("dtype_test2")
-    table_error = create_unique_table_name("error")
-    table_single = create_unique_table_name("single_dtype_test")
+    table_uuid = create_uuid("dtype_test")
+    table_uuid2 = create_uuid("dtype_test2")
+    table_error = create_uuid("error")
+    table_single = create_uuid("single_dtype_test")
     cols = ["A", "B"]
     data = [(0.8, True), (0.9, None)]
     df = DataFrame(data, columns=cols)
@@ -4274,7 +4586,7 @@ def test_sqlite_notna_dtype(sqlite_buildin):
     }
     df = DataFrame(cols)
 
-    tbl = create_unique_table_name("notna_dtype_test")
+    tbl = "table_"+create_uuid("notna_dtype_test")
     assert df.to_sql(name=tbl, con=conn) == 2
 
     assert get_sqlite_column_type(conn, tbl, "Bool") == "INTEGER"
@@ -4351,8 +4663,8 @@ def test_xsqlite_basic(sqlite_buildin):
         columns=Index(list("ABCD")),
         index=date_range("2000-01-01", periods=10, freq="B"),
     )
-    table_uuid = create_unique_table_name("test_table")
-    table_uuid2 = create_unique_table_name("test_table2")
+    table_uuid = "table_"+create_uuid("test_table")
+    table_uuid2 = "table_"+create_uuid("test_table2")
     assert sql.to_sql(frame, name=table_uuid, con=sqlite_buildin, index=False) == 10
     result = sql.read_sql(f"select * from {table_uuid}", sqlite_buildin)
 
@@ -4382,7 +4694,7 @@ def test_xsqlite_write_row_by_row(sqlite_buildin):
         columns=Index(list("ABCD")),
         index=date_range("2000-01-01", periods=10, freq="B"),
     )
-    table_uuid = create_unique_table_name("test")
+    table_uuid = "table_"+create_uuid("test")
     frame.iloc[0, 0] = np.nan
     create_sql = sql.get_schema(frame, table_uuid)
     cur = sqlite_buildin.cursor()
@@ -4406,7 +4718,7 @@ def test_xsqlite_execute(sqlite_buildin):
         columns=Index(list("ABCD")),
         index=date_range("2000-01-01", periods=10, freq="B"),
     )
-    table_uuid = create_unique_table_name("test")
+    table_uuid = "table_"+create_uuid("test")
     create_sql = sql.get_schema(frame, table_uuid)
     cur = sqlite_buildin.cursor()
     cur.execute(create_sql)
@@ -4428,7 +4740,7 @@ def test_xsqlite_schema(sqlite_buildin):
         columns=Index(list("ABCD")),
         index=date_range("2000-01-01", periods=10, freq="B"),
     )
-    table_uuid = create_unique_table_name("test")
+    table_uuid = "table_"+create_uuid("test")
     create_sql = sql.get_schema(frame, table_uuid)
     lines = create_sql.splitlines()
     for line in lines:
@@ -4444,7 +4756,7 @@ def test_xsqlite_schema(sqlite_buildin):
 
 
 def test_xsqlite_execute_fail(sqlite_buildin):
-    table_uuid = create_unique_table_name("test")
+    table_uuid = "table_"+create_uuid("test")
     create_sql = f"""
     CREATE TABLE {table_uuid}
     (
@@ -4466,7 +4778,7 @@ def test_xsqlite_execute_fail(sqlite_buildin):
 
 
 def test_xsqlite_execute_closed_connection():
-    table_uuid = create_unique_table_name("test")
+    table_uuid = "table_"+create_uuid("test")
     create_sql = f"""
     CREATE TABLE {table_uuid}
     (
@@ -4489,7 +4801,7 @@ def test_xsqlite_execute_closed_connection():
 
 
 def test_xsqlite_keyword_as_column_names(sqlite_buildin):
-    table_uuid = create_unique_table_name("testkeywords")
+    table_uuid = "table_"+create_uuid("testkeywords")
     df = DataFrame({"From": np.ones(5)})
     assert sql.to_sql(df, con=sqlite_buildin, name=table_uuid, index=False) == 5
 
@@ -4497,7 +4809,7 @@ def test_xsqlite_keyword_as_column_names(sqlite_buildin):
 def test_xsqlite_onecolumn_of_integer(sqlite_buildin):
     # GH 3628
     # a column_of_integers dataframe should transfer well to sql
-    table_uuid = create_unique_table_name("mono_df")
+    table_uuid = "table_"+create_uuid("mono_df")
     mono_df = DataFrame([1, 2], columns=["c0"])
     assert sql.to_sql(mono_df, con=sqlite_buildin, name=table_uuid, index=False) == 2
     # computing the sum via sql
@@ -4513,7 +4825,7 @@ def test_xsqlite_onecolumn_of_integer(sqlite_buildin):
 def test_xsqlite_if_exists(sqlite_buildin):
     df_if_exists_1 = DataFrame({"col1": [1, 2], "col2": ["A", "B"]})
     df_if_exists_2 = DataFrame({"col1": [3, 4, 5], "col2": ["C", "D", "E"]})
-    table_name = create_unique_table_name("table_if_exists")
+    table_name = "table_"+create_uuid("table_if_exists")
     sql_select = f"SELECT * FROM {table_name}"
 
     msg = "'notvalidvalue' is not valid for if_exists"
