@@ -3895,6 +3895,7 @@ def test_get_schema_create_table(connect_and_uuid, request, test_frame3):
 
 @pytest.mark.parametrize("connect_and_uuid", setup(sqlalchemy_connectable, uuid_tables = "test_dataframe_to_sql"), indirect = True)
 def test_dtype(connect_and_uuid):
+
     conn = connect_and_uuid["conn"]
     table_uuid = connect_and_uuid["table_uuid"]
     conn_name = connect_and_uuid["conn_name"]
@@ -3905,6 +3906,7 @@ def test_dtype(connect_and_uuid):
     from sqlalchemy import (
         TEXT,
         String,
+        Table
     )
     from sqlalchemy.schema import MetaData
 
@@ -3912,7 +3914,7 @@ def test_dtype(connect_and_uuid):
     data = [(0.8, True), (0.9, None)]
     df = DataFrame(data, columns=cols)
 
-    table_uuid1 = table_uuid
+    table_uuid1 = 'a'+table_uuid
     table_uuid2 = 'b'+table_uuid
     table_uuid3 = 'c'+table_uuid
     table_uuid_single = 's'+table_uuid
@@ -3921,8 +3923,8 @@ def test_dtype(connect_and_uuid):
     assert df.to_sql(name=table_uuid1, con=conn) == 2
     assert df.to_sql(name=table_uuid2, con=conn, dtype={"B": TEXT}) == 2
     meta = MetaData()
-    meta.reflect(bind=conn)
-    sqltype = meta.tables[table_uuid2].columns["B"].type
+    table_with_strings = Table(table_uuid2, meta, autoload_with=conn)
+    sqltype = table_with_strings.columns["B"].type
     assert isinstance(sqltype, TEXT)
     msg = "The type of B is not a SQLAlchemy type"
     with pytest.raises(ValueError, match=msg):
@@ -3930,25 +3932,20 @@ def test_dtype(connect_and_uuid):
 
     # GH9083
     assert df.to_sql(name=table_uuid3, con=conn, dtype={"B": String(10)}) == 2
-    meta.reflect(bind=conn)
-    sqltype = meta.tables[table_uuid3].columns["B"].type
+    meta = MetaData()
+    table_with_sql_strings = Table(table_uuid3, meta, autoload_with=conn)
+    sqltype = table_with_sql_strings.columns["B"].type
     assert isinstance(sqltype, String)
     assert sqltype.length == 10
 
     # single dtype
     assert df.to_sql(name=table_uuid_single, con=conn, dtype=TEXT) == 2
-    meta.reflect(bind=conn)
-    sqltypea = meta.tables[table_uuid_single].columns["A"].type
-    sqltypeb = meta.tables[table_uuid_single].columns["B"].type
+    meta = MetaData()
+    table_with_sql_dtype_text = Table(table_uuid_single, meta, autoload_with=conn)
+    sqltypea = table_with_sql_dtype_text.columns["A"].type
+    sqltypeb = table_with_sql_dtype_text.columns["B"].type
     assert isinstance(sqltypea, TEXT)
     assert isinstance(sqltypeb, TEXT)
-    with open("test_dtype.txt", "a") as file:
-        file.write(conn_name)
-        file.write("\n")
-        file.write("\n")
-        file.write(repr(setup(sqlalchemy_connectable)))
-        file.write("\n")
-        file.write("\n")
 
 
 
@@ -3966,6 +3963,7 @@ def test_notna_dtype(connect_and_uuid):
         DateTime,
         Float,
         Integer,
+        Table
     )
     from sqlalchemy.schema import MetaData
 
@@ -3980,20 +3978,14 @@ def test_notna_dtype(connect_and_uuid):
     assert df.to_sql(name=table_uuid, con=conn) == 2
     _ = sql.read_sql_table(table_uuid, conn)
     meta = MetaData()
-    meta.reflect(bind=conn)
+    table_with_datatypes = Table(table_uuid, meta, autoload_with=conn)
+
     my_type = Integer if "mysql" in conn_name else Boolean
-    col_dict = meta.tables[table_uuid].columns
+    col_dict = table_with_datatypes.columns
     assert isinstance(col_dict["Bool"].type, my_type)
     assert isinstance(col_dict["Date"].type, DateTime)
     assert isinstance(col_dict["Int"].type, Integer)
     assert isinstance(col_dict["Float"].type, Float)
-    with open("test_notna_dtype.txt", "a") as file:
-        file.write(conn_name)
-        file.write("\n")
-        file.write("\n")
-        file.write(repr(setup(sqlalchemy_connectable)))
-        file.write("\n")
-        file.write("\n")
 
 
 
@@ -4011,6 +4003,7 @@ def test_double_precision(connect_and_uuid):
         BigInteger,
         Float,
         Integer,
+        Table
     )
     from sqlalchemy.schema import MetaData
 
@@ -4043,20 +4036,13 @@ def test_double_precision(connect_and_uuid):
 
     # check sql types
     meta = MetaData()
-    meta.reflect(bind=conn)
-    col_dict = meta.tables[table_uuid].columns
+    table_with_datatypes = Table(table_uuid, meta, autoload_with=conn)
+    col_dict = table_with_datatypes.columns
     assert str(col_dict["f32"].type) == str(col_dict["f64_as_f32"].type)
     assert isinstance(col_dict["f32"].type, Float)
     assert isinstance(col_dict["f64"].type, Float)
     assert isinstance(col_dict["i32"].type, Integer)
     assert isinstance(col_dict["i64"].type, BigInteger)
-    with open("test_double_precision.txt", "a") as file:
-        file.write(conn_name)
-        file.write("\n")
-        file.write("\n")
-        file.write(repr(setup(sqlalchemy_connectable)))
-        file.write("\n")
-        file.write("\n")
 
 
 
@@ -4575,11 +4561,13 @@ def test_roundtripping_datetimes(connect_and_uuid):
 
 @pytest.fixture
 def sqlite_builtin_detect_types():
-    with contextlib.closing(
-        sqlite3.connect(":memory:", detect_types=sqlite3.PARSE_DECLTYPES)
-    ) as closing_conn:
-        with closing_conn as conn:
-            yield conn
+    yield sqlite3.connect(":memory:", detect_types=sqlite3.PARSE_DECLTYPES)
+
+    # with contextlib.closing(
+    #     sqlite3.connect(":memory:", detect_types=sqlite3.PARSE_DECLTYPES)
+    # ) as closing_conn:
+    #     with closing_conn as conn:
+    #         yield conn
 
 
 @pytest.mark.parametrize("connect_and_uuid", setup(['sqlite_builtin_detect_types'], uuid_tables = "test_dataframe_to_sql_empty"), indirect = True)
