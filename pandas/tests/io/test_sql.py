@@ -64,13 +64,16 @@ pytestmark = [
 
 
 # @pytest.fixture
-def create_uuid(uuid_value):
-    # def _return_uuid(content):
-    return f"{uuid_value}_"+ f"{uuid.uuid4().hex}"[0:25]
+def create_uuid():
+    return lambda uuid_val: f"{uuid_val}_"+ f"{uuid.uuid4().hex}"[0:10]
     # return _return_uuid
 
     # return f'{getattr(request, "param", "None")}_{uuid.uuid4().hex}'
-
+# @pytest.fixture(scope="function")
+# def fixture_create_uuid(request):
+#     with open("fatdump.txt", "w") as file:
+#         file.write(repr(request.__dict__))
+#     return f"{request.params[1]}_"+ f"{uuid.uuid4().hex}"[0:25]
 
 def repeat(constant):
     while True:
@@ -151,9 +154,6 @@ def create_and_load_iris_sqlite3(conn, iris_file: Path, iris_uuid):
             "Name" TEXT
         )"""
     import sqlalchemy
-    with open("conn_type_dump.txt", "a") as file:
-        file.write("\n")
-        file.write(repr(type(conn)))
     if type(conn) == sqlalchemy.engine.base.Engine:
         conn = conn.raw_connection()
     cur = conn.cursor()
@@ -257,7 +257,7 @@ def create_and_load_iris_view(conn, iris_table_uuid, iris_view_uuid):
                 con.execute(stmt)
 
 
-def types_table_metadata(dialect: str):
+def types_table_metadata(dialect: str, table_name):
     from sqlalchemy import (
         TEXT,
         Boolean,
@@ -273,7 +273,7 @@ def types_table_metadata(dialect: str):
     bool_type = Integer if dialect == "sqlite" else Boolean
     metadata = MetaData()
     types = Table(
-        "types",
+        table_name,
         metadata,
         Column("TextCol", TEXT),
         # error: Cannot infer type argument 1 of "Column"
@@ -291,8 +291,8 @@ def types_table_metadata(dialect: str):
     return types
 
 
-def create_and_load_types_sqlite3(conn, types_data: list[dict]):
-    stmt = """CREATE TABLE types (
+def create_and_load_types_sqlite3(conn, types_data: list[dict], table_uuid):
+    stmt = f"""CREATE TABLE {table_uuid} (
                     "TextCol" TEXT,
                     "DateCol" TEXT,
                     "IntDateCol" INTEGER,
@@ -304,8 +304,8 @@ def create_and_load_types_sqlite3(conn, types_data: list[dict]):
                     "BoolColWithNull" INTEGER
                 )"""
 
-    ins_stmt = """
-                INSERT INTO types
+    ins_stmt = f"""
+                INSERT INTO {table_uuid}
                 VALUES(?, ?, ?, ?, ?, ?, ?, ?, ?)
                 """
 
@@ -321,9 +321,9 @@ def create_and_load_types_sqlite3(conn, types_data: list[dict]):
         conn.commit()
 
 
-def create_and_load_types_postgresql(conn, types_data: list[dict]):
+def create_and_load_types_postgresql(conn, types_data: list[dict], table_uuid):
     with conn.cursor() as cur:
-        stmt = """CREATE TABLE types (
+        stmt = f"""CREATE TABLE {table_uuid} (
                         "TextCol" TEXT,
                         "DateCol" TIMESTAMP,
                         "IntDateCol" INTEGER,
@@ -336,8 +336,8 @@ def create_and_load_types_postgresql(conn, types_data: list[dict]):
                     )"""
         cur.execute(stmt)
 
-        stmt = """
-                INSERT INTO types
+        stmt = f"""
+                INSERT INTO {table_uuid}
                 VALUES($1, $2::timestamp, $3, $4, $5, $6, $7, $8, $9)
                 """
 
@@ -346,11 +346,11 @@ def create_and_load_types_postgresql(conn, types_data: list[dict]):
     conn.commit()
 
 
-def create_and_load_types(conn, types_data: list[dict], dialect: str):
+def create_and_load_types(conn, types_data: list[dict], dialect: str, table_name):
     from sqlalchemy import insert
     from sqlalchemy.engine import Engine
 
-    types = types_table_metadata(dialect)
+    types = types_table_metadata(dialect, table_name)
 
     stmt = insert(types).values(types_data)
     if isinstance(conn, Engine):
@@ -749,7 +749,7 @@ def mysql_pymysql_engine_iris(request, mysql_pymysql_engine, iris_path):
         drop_table(tbl, conn)
 @pytest.fixture
 def mysql_pymysql_engine_types(mysql_pymysql_engine, types_data):
-    create_and_load_types(mysql_pymysql_engine, types_data, "mysql")
+    # create_and_load_types(mysql_pymysql_engine, types_data, "mysql", request.params[1])
     return mysql_pymysql_engine
 
 
@@ -782,10 +782,12 @@ def mysql_pymysql_conn_types(mysql_pymysql_engine_types):
 def postgresql_psycopg2_engine(request):
     sqlalchemy = pytest.importorskip("sqlalchemy")
     pytest.importorskip("psycopg2")
+    # assert 1 ==2
     engine = sqlalchemy.create_engine(
         "postgresql+psycopg2://postgres:postgres@localhost:5432/pandas",
         poolclass=sqlalchemy.pool.NullPool,
     )
+    postgresql_psycopg2_conn
     yield engine
 
     # for view in filter_get_all_tables(engine, getattr(request, "create_uuid")):
@@ -823,7 +825,7 @@ def postgresql_psycopg2_engine_iris(request, postgresql_psycopg2_engine, iris_pa
 
 @pytest.fixture
 def postgresql_psycopg2_engine_types(postgresql_psycopg2_engine, types_data):
-    create_and_load_types(postgresql_psycopg2_engine, types_data, "postgres")
+    # create_and_load_types(postgresql_psycopg2_engine, types_data, "postgres")
     return postgresql_psycopg2_engine
 
 
@@ -842,11 +844,13 @@ def postgresql_adbc_conn():
     uri = "postgresql://postgres:postgres@localhost:5432/pandas"
     with dbapi.connect(uri) as conn:
         yield conn
-        for view in get_all_views(conn):
-            drop_view(view, conn)
-        for tbl in get_all_tables(conn):
-            drop_table(tbl, conn)
-        conn.commit()
+        # conn.commit()
+    # with dbapi.connect(uri) as conn:
+    #
+    #     for view in get_all_views(conn):
+    #         drop_view(view, conn)
+    #     for tbl in get_all_tables(conn):
+    #         drop_table(tbl, conn)
 
 
 @pytest.fixture
@@ -901,13 +905,13 @@ def postgresql_adbc_types(postgresql_adbc_conn, types_data):
 
     conn = postgresql_adbc_conn
 
-    try:
-        conn.adbc_get_table_schema("types")
-    except mgr.ProgrammingError:
-        conn.rollback()
-        new_data = [tuple(entry.values()) for entry in types_data]
-
-        create_and_load_types_postgresql(conn, new_data)
+    # try:
+    #     conn.adbc_get_table_schema("types")
+    # except mgr.ProgrammingError:
+    #     conn.rollback()
+    #     new_data = [tuple(entry.values()) for entry in types_data]
+    #
+    #     create_and_load_types_postgresql(conn, new_data)
 
     return conn
 
@@ -927,7 +931,6 @@ def postgresql_psycopg2_conn_types(postgresql_psycopg2_engine_types):
 
 @pytest.fixture
 def sqlite_str():
-    pytest.importorskip("sqlalchemy")
     with tm.ensure_clean() as name:
         yield f"sqlite:///{name}"
 
@@ -937,10 +940,10 @@ def sqlite_engine(sqlite_str):
     sqlalchemy = pytest.importorskip("sqlalchemy")
     engine = sqlalchemy.create_engine(sqlite_str, poolclass=sqlalchemy.pool.NullPool)
     yield engine
-    for view in get_all_views(engine):
-        drop_view(view, engine)
-    for tbl in get_all_tables(engine):
-        drop_table(tbl, engine)
+    # for view in get_all_views(engine):
+    #     drop_view(view, engine)
+    # for tbl in get_all_tables(engine):
+    #     drop_table(tbl, engine)
     engine.dispose()
 
 
@@ -1023,14 +1026,14 @@ def sqlite_conn_iris(sqlite_engine_iris):
 def sqlite_str_types(sqlite_str, types_data):
     sqlalchemy = pytest.importorskip("sqlalchemy")
     engine = sqlalchemy.create_engine(sqlite_str)
-    create_and_load_types(engine, types_data, "sqlite")
+    # create_and_load_types(engine, types_data, "sqlite")
     engine.dispose()
     return sqlite_str
 
 
 @pytest.fixture
-def sqlite_engine_types(sqlite_engine, types_data):
-    create_and_load_types(sqlite_engine, types_data, "sqlite")
+def sqlite_engine_types(sqlite_engine):
+    # create_and_load_types(sqlite_engine, types_data, "sqlite")
     return sqlite_engine
 
 
@@ -1050,11 +1053,11 @@ def sqlite_adbc_conn():
         uri = f"file:{name}"
         with dbapi.connect(uri) as conn:
             yield conn
-            for view in get_all_views(conn):
-                drop_view(view, conn)
-            for tbl in get_all_tables(conn):
-                drop_table(tbl, conn)
-            conn.commit()
+            # for view in get_all_views(conn):
+            #     drop_view(view, conn)
+            # for tbl in get_all_tables(conn):
+            #     drop_table(tbl, conn)
+            # conn.commit()
 
 
 @pytest.fixture
@@ -1100,28 +1103,29 @@ def sqlite_adbc_types(sqlite_adbc_conn, types_data):
     import adbc_driver_manager as mgr
 
     conn = sqlite_adbc_conn
-    try:
-        conn.adbc_get_table_schema("types")
-    except mgr.ProgrammingError:
-        conn.rollback()
-        new_data = []
-        for entry in types_data:
-            entry["BoolCol"] = int(entry["BoolCol"])
-            if entry["BoolColWithNull"] is not None:
-                entry["BoolColWithNull"] = int(entry["BoolColWithNull"])
-            new_data.append(tuple(entry.values()))
-
-        create_and_load_types_sqlite3(conn, new_data)
-        conn.commit()
+    # try:
+    #     conn.adbc_get_table_schema("types")
+    # except mgr.ProgrammingError:
+    #     conn.rollback()
+    #     new_data = []
+    #     for entry in types_data:
+    #         entry["BoolCol"] = int(entry["BoolCol"])
+    #         if entry["BoolColWithNull"] is not None:
+    #             entry["BoolColWithNull"] = int(entry["BoolColWithNull"])
+    #         new_data.append(tuple(entry.values()))
+    #
+    #     create_and_load_types_sqlite3(conn, new_data)
+    #     conn.commit()
 
     return conn
 
 
 @pytest.fixture
 def sqlite_buildin():
-    with contextlib.closing(sqlite3.connect(":memory:")) as closing_conn:
-        with closing_conn as conn:
-            yield conn
+    # with contextlib.closing(sqlite3.connect(":memory:")) as closing_conn:
+    #     # with closing_conn as conn:
+    #     yield closing_conn
+    yield sqlite3.connect(":memory:")
 
 
 @pytest.fixture
@@ -1155,7 +1159,7 @@ def sqlite_buildin_iris(request, sqlite_buildin, iris_path):
 @pytest.fixture
 def sqlite_buildin_types(sqlite_buildin, types_data):
     types_data = [tuple(entry.values()) for entry in types_data]
-    create_and_load_types_sqlite3(sqlite_buildin, types_data)
+    # create_and_load_types_sqlite3(sqlite_buildin, types_data)
     return sqlite_buildin
 
 
@@ -1285,34 +1289,113 @@ def iris_connect_and_per_test_id(request, iris_path):
     }
 
 
+# connectable_types_to_create_uuid_function_map = {
+#     "mysql_pymysql_engine_types": lambda eng, types_data, dialect, uuid: create_and_load_types(mysql_pymysql_engine,
+#                                                                                                types_data, "mysql"),
+#     "mysql_pymysql_conn_types": create_and_load_types(mysql_pymysql_engine, types_data, "mysql"),
+#
+#     "postgresql_psycopg2_engine_types": create_and_load_types(postgresql_psycopg2_engine, types_data, "postgres"),
+#     "postgresql_adbc_types": create_and_load_types_postgresql(conn, new_data),
+#     "postgresql_psycopg2_conn_types": create_and_load_types(postgresql_psycopg2_engine, types_data, "postgres"),
+#
+#     "sqlite_str_types": create_and_load_types(engine, types_data, "sqlite"),
+#     "sqlite_engine_types": create_and_load_types(sqlite_engine, types_data, "sqlite"),
+#     "sqlite_conn_types": create_and_load_types(sqlite_engine, types_data, "sqlite"),
+#
+#     "sqlite_adbc_types": create_and_load_types_sqlite3(conn, new_data),
+#
+#     "sqlite_buildin_types": create_and_load_types_sqlite3(sqlite_buildin, types_data)
+# }
+
+connectable_types_to_create_uuid_function_map = {
+    "mysql_pymysql_engine_types"        :   lambda eng, types_data, uuid        : create_and_load_types(eng, types_data, "mysql", uuid),
+    "mysql_pymysql_conn_types"          :   lambda eng, types_data, uuid        : create_and_load_types(eng, types_data, "mysql", uuid),
+
+    "postgresql_psycopg2_engine_types"  :   lambda eng, types_data, uuid        : create_and_load_types(eng, types_data, "postgres", uuid),
+    "postgresql_adbc_types"             :   lambda eng, new_data, uuid          : create_and_load_types_postgresql(eng, new_data, uuid),
+    "postgresql_psycopg2_conn_types"    :   lambda eng, types_data, uuid        : create_and_load_types(eng, types_data, "postgres", uuid),
+
+    "sqlite_str_types"                  :   lambda eng, types_data, uuid        : create_and_load_types(eng, types_data, "sqlite", uuid),
+    "sqlite_engine_types"               :   lambda eng, types_data, uuid        : create_and_load_types(eng, types_data, "sqlite", uuid),
+    "sqlite_conn_types"                 :   lambda eng, types_data, uuid        : create_and_load_types(eng, types_data, "sqlite", uuid),
+
+    "sqlite_adbc_types"                 :   lambda eng, new_data, uuid          : create_and_load_types_sqlite3(eng, new_data, uuid),
+
+    "sqlite_buildin_types"              :   lambda eng, types_data, uuid        : create_and_load_types_sqlite3(eng, [tuple(entry.values()) for entry in types_data], uuid)
+}
+
+
 @pytest.fixture
-def connect_and_uuid(request):
+def connect_and_uuid(request, types_data):
     conn_name = request.param[0]
-    table_uuid = None if request.param[1] is None else "table_"+create_uuid(request.param[1])
-    view_uuid = None if request.param[2] is None else "view_"+create_uuid(request.param[2])
+    table_uuid = None if request.param[1] is None else "table_"+create_uuid()(request.param[1])
+    view_uuid = None if request.param[2] is None else "view_"+create_uuid()(request.param[2])
+
+
+
+
     conn = request.getfixturevalue(conn_name)
+    if conn_name in connectable_types_to_create_uuid_function_map.keys():
+        # Load types function
+        types_connect_and_load = connectable_types_to_create_uuid_function_map[conn_name]
+
+        # Prepare data to insert into types
+        if conn_name == "sqlite_adbc_types":
+            data = []
+            for entry in types_data:
+                entry["BoolCol"] = int(entry["BoolCol"])
+                if entry["BoolColWithNull"] is not None:
+                    entry["BoolColWithNull"] = int(entry["BoolColWithNull"])
+                data.append(tuple(entry.values()))
+
+        elif conn_name == "postgresql_adbc_types":
+            data = [tuple(entry.values()) for entry in types_data]
+
+        else:
+            data = types_data
+
+        #Create engine if using sqlstring
+        if conn_name == "sqlite_str_types":
+            sqlalchemy = pytest.importorskip("sqlalchemy")
+            engine = sqlalchemy.create_engine(conn)
+            types_connect_and_load(engine, data, table_uuid)
+            engine.dispose()
+        else:
+            # Execute function that creates types_table
+            types_connect_and_load(conn, data, table_uuid)
+
     # with open('rawconn.txt', 'a') as file:
     #     file.write('\n')
     #     file.write(repr(conn))
     #     file.write('\n')
     #     file.write(str(type(conn)))
 
-    import sqlalchemy
-    from sqlalchemy import Engine
+    sqlalchemy = pytest.importorskip("sqlalchemy")
     yield {
         "conn": conn,
         "table_uuid": table_uuid,
         "view_uuid": view_uuid,
         "conn_name": conn_name
     }
-    if type(conn) != type("str"):
-        if view_uuid is not None:
-            for view in filter_get_all_views(conn, view_uuid):
-                drop_view(view, conn)
+    if type(conn) == type("str"):
+        conn = sqlalchemy.create_engine(conn)
+    if type(conn) != sqlalchemy.Engine:
+        conn.commit()
+    # if type(conn) != type("str"):
+    if view_uuid is not None:
+        for view in filter_get_all_views(conn, view_uuid):
+            drop_view(view, conn)
 
-        if table_uuid is not None:
-            for tbl in filter_get_all_tables(conn, table_uuid):
-                drop_table(tbl, conn)
+    if table_uuid is not None:
+        for tbl in filter_get_all_tables(conn, table_uuid):
+            drop_table(tbl, conn)
+    if type (conn) == sqlalchemy.Engine:
+        conn.dispose()
+    else:
+        conn.close()
+        # conn.dispose()
+
+
 
 
 # @pytest.mark.parametrize("connect_and_uuid", setup(all_connectable, uuid_tables = "test_dataframe_to_sql"), indirect = True)
@@ -1321,14 +1404,16 @@ def connect_and_uuid(request):
 
 @pytest.mark.parametrize("connect_and_uuid", setup(all_connectable, uuid_tables = "test_dataframe_to_sql"), indirect = True)
 def test_dataframe_to_sql(connect_and_uuid, test_frame1, request):
-    conn, table_uuid = connect_and_uuid
+    conn = connect_and_uuid["conn"]
+    table_uuid = connect_and_uuid["table_uuid"]
     test_frame1.to_sql(name=table_uuid, con=conn, if_exists="append", index=False)
 
 
 # @pytest.mark.parametrize("conn", all_connectable)
 @pytest.mark.parametrize("connect_and_uuid", setup(all_connectable, uuid_tables = "test_dataframe_to_sql_empty"), indirect = True)
 def test_dataframe_to_sql_empty(connect_and_uuid, test_frame1, request):
-    conn, table_uuid = connect_and_uuid
+    conn = connect_and_uuid["conn"]
+    table_uuid = connect_and_uuid["table_uuid"]
 
     if "adbc_driver_manager.dbapi.Connection" in str(type(conn)):
         request.node.add_marker(
@@ -1342,9 +1427,16 @@ def test_dataframe_to_sql_empty(connect_and_uuid, test_frame1, request):
     empty_df.to_sql(name=table_uuid, con=conn, if_exists="append", index=False)
 
 
-@pytest.mark.parametrize("conn", all_connectable)
-def test_dataframe_to_sql_arrow_dtypes(conn, request):
+@pytest.mark.parametrize("connect_and_uuid", setup(all_connectable, uuid_tables = "test_dataframe_to_sql"), indirect = True)
+def test_dataframe_to_sql_arrow_dtypes(connect_and_uuid, request, test_frame1):
     # GH 52046
+    conn = connect_and_uuid["conn"]
+    table_uuid = connect_and_uuid["table_uuid"]
+    conn_name = connect_and_uuid["conn_name"]
+
+
+    test_frame1.to_sql(name=table_uuid, con=conn, if_exists="append", index=False)
+
     pytest.importorskip("pyarrow")
     df = DataFrame(
         {
@@ -1358,8 +1450,8 @@ def test_dataframe_to_sql_arrow_dtypes(conn, request):
         }
     )
 
-    if "adbc" in conn:
-        if conn == "sqlite_adbc_conn":
+    if "adbc" in conn_name:
+        if conn_name == "sqlite_adbc_conn":
             df = df.drop(columns=["timedelta"])
         if pa_version_under14p1:
             exp_warning = DeprecationWarning
@@ -1371,15 +1463,20 @@ def test_dataframe_to_sql_arrow_dtypes(conn, request):
         exp_warning = UserWarning
         msg = "the 'timedelta'"
 
-    conn = request.getfixturevalue(conn)
-    table_uuid = "table_"+create_uuid("test_arrow")
     with tm.assert_produces_warning(exp_warning, match=msg, check_stacklevel=False):
         df.to_sql(name=table_uuid, con=conn, if_exists="replace", index=False)
 
 
-@pytest.mark.parametrize("conn", all_connectable)
-def test_dataframe_to_sql_arrow_dtypes_missing(conn, request, nulls_fixture):
+@pytest.mark.parametrize("connect_and_uuid", setup(all_connectable, uuid_tables = "test_dataframe_to_sql"), indirect = True)
+def test_dataframe_to_sql_arrow_dtypes_missing(connect_and_uuid, request, nulls_fixture):
     # GH 52046
+    conn = connect_and_uuid["conn"]
+    table_uuid = connect_and_uuid["table_uuid"]
+    # table_uuid = "a_"+ f"{uuid.uuid4().hex}"[0:25]
+    # with open("blah.txt", "a") as file:
+    #     file.write('\n')
+    #     file.write(table_uuid)
+
     pytest.importorskip("pyarrow")
     df = DataFrame(
         {
@@ -1388,34 +1485,36 @@ def test_dataframe_to_sql_arrow_dtypes_missing(conn, request, nulls_fixture):
             ),
         }
     )
-    conn = request.getfixturevalue(conn)
-    table_uuid = "table_"+create_uuid("test_arrow")
     df.to_sql(name=table_uuid, con=conn, if_exists="replace", index=False)
 
 
-@pytest.mark.parametrize("conn", all_connectable)
+@pytest.mark.parametrize("connect_and_uuid", setup(all_connectable, uuid_tables = "test_dataframe_to_sql"), indirect = True)
 @pytest.mark.parametrize("method", [None, "multi"])
-def test_to_sql(conn, method, test_frame1, request):
-    if method == "multi" and "adbc" in conn:
+def test_to_sql(connect_and_uuid, method, test_frame1, request):
+    conn = connect_and_uuid["conn"]
+    table_uuid = connect_and_uuid["table_uuid"]
+    conn_name = connect_and_uuid["conn_name"]
+
+    if method == "multi" and "adbc" in conn_name:
         request.node.add_marker(
             pytest.mark.xfail(
                 reason="'method' not implemented for ADBC drivers", strict=True
             )
         )
 
-    conn = request.getfixturevalue(conn)
-    table_uuid = "table_"+create_uuid("test_frame")
     with pandasSQL_builder(conn, need_transaction=True) as pandasSQL:
         pandasSQL.to_sql(test_frame1, table_uuid, method=method)
         assert pandasSQL.has_table(table_uuid)
     assert count_rows(conn, table_uuid) == len(test_frame1)
 
 
-@pytest.mark.parametrize("conn", all_connectable)
+@pytest.mark.parametrize("connect_and_uuid", setup(all_connectable, uuid_tables = "test_dataframe_to_sql"), indirect = True)
 @pytest.mark.parametrize("mode, num_row_coef", [("replace", 1), ("append", 2)])
-def test_to_sql_exist(conn, mode, num_row_coef, test_frame1, request):
-    conn = request.getfixturevalue(conn)
-    table_uuid = "table_"+create_uuid("test_frame")
+def test_to_sql_exist(connect_and_uuid, mode, num_row_coef, test_frame1, request):
+    conn = connect_and_uuid["conn"]
+    table_uuid = connect_and_uuid["table_uuid"]
+    conn_name = connect_and_uuid["conn_name"]
+
     with pandasSQL_builder(conn, need_transaction=True) as pandasSQL:
         pandasSQL.to_sql(test_frame1, table_uuid, if_exists="fail")
         pandasSQL.to_sql(test_frame1, table_uuid, if_exists=mode)
@@ -1423,10 +1522,11 @@ def test_to_sql_exist(conn, mode, num_row_coef, test_frame1, request):
     assert count_rows(conn, table_uuid) == num_row_coef * len(test_frame1)
 
 
-@pytest.mark.parametrize("conn", all_connectable)
-def test_to_sql_exist_fail(conn, test_frame1, request):
-    conn = request.getfixturevalue(conn)
-    table_uuid = "table_"+create_uuid("test_frame")
+@pytest.mark.parametrize("connect_and_uuid", setup(all_connectable, uuid_tables = "test_dataframe_to_sql"), indirect = True)
+def test_to_sql_exist_fail(connect_and_uuid, test_frame1, request):
+    conn = connect_and_uuid["conn"]
+    table_uuid = connect_and_uuid["table_uuid"]
+    conn_name = connect_and_uuid["conn_name"]
     with pandasSQL_builder(conn, need_transaction=True) as pandasSQL:
         pandasSQL.to_sql(test_frame1, table_uuid, if_exists="fail")
         assert pandasSQL.has_table(table_uuid)
@@ -1480,7 +1580,7 @@ def test_read_iris_query_expression_with_parameter(iris_connect_and_per_test_id,
     iris_uuid = iris_connect_and_per_test_id['iris_table_uuid']
     conn_name = iris_connect_and_per_test_id['conn_name']
 
-    if "adbc" in conn:
+    if "adbc" in conn_name:
         request.node.add_marker(
             pytest.mark.xfail(
                 reason="'chunksize' not implemented for ADBC drivers",
@@ -1518,10 +1618,9 @@ def test_read_iris_query_string_with_parameter(iris_connect_and_per_test_id, req
                 strict=True,
             )
         )
-    iris_strings = sql_strings["read_parameters"]
-    for key, value in iris_strings:
-        iris_strings[key] = iris_strings[value].replace(iris, iris_uuid)
-    # iris_sql_strings = sql_strings["read_parameters"].replace("iris", iris_uuid)
+    iris_sql_strings = sql_strings["read_parameters"]
+    for key, value in iris_sql_strings.items():
+        iris_sql_strings[key] = iris_sql_strings[key].replace("iris", iris_uuid)
     for db, query in iris_sql_strings.items():
         if db in conn_name:
             break
@@ -1566,10 +1665,10 @@ def test_read_iris_table_chunksize(iris_connect_and_per_test_id, request):
     check_iris_frame(iris_frame)
 
 
-@pytest.mark.parametrize("conn", sqlalchemy_connectable)
-def test_to_sql_callable(conn, test_frame1, request):
-    conn = request.getfixturevalue(conn)
-    table_uuid = "table_"+create_uuid("test_frame")
+@pytest.mark.parametrize("connect_and_uuid", setup(sqlalchemy_connectable, uuid_tables = "test_dataframe_to_sql_empty"), indirect = True)
+def test_to_sql_callable(connect_and_uuid, test_frame1, request):
+    conn = connect_and_uuid["conn"]
+    table_uuid = connect_and_uuid["table_uuid"]
 
     check = []  # used to double check function below is really being used
 
@@ -1585,9 +1684,11 @@ def test_to_sql_callable(conn, test_frame1, request):
     assert count_rows(conn, table_uuid) == len(test_frame1)
 
 
-@pytest.mark.parametrize("conn", all_connectable_types)
-def test_default_type_conversion(conn, request):
-    conn_name = conn
+@pytest.mark.parametrize("connect_and_uuid", setup(sqlalchemy_connectable_types, uuid_tables = "test_dataframe_to_sql"), indirect = True)
+def test_default_type_conversion(connect_and_uuid, request):
+    conn = connect_and_uuid["conn"]
+    table_uuid = connect_and_uuid["table_uuid"]
+    conn_name = connect_and_uuid["conn_name"]
     if conn_name == "sqlite_buildin_types":
         request.applymarker(
             pytest.mark.xfail(
@@ -1595,8 +1696,7 @@ def test_default_type_conversion(conn, request):
             )
         )
 
-    conn = request.getfixturevalue(conn)
-    df = sql.read_sql_table("types", conn)
+    df = sql.read_sql_table(table_uuid, conn)
 
     assert issubclass(df.FloatCol.dtype.type, np.floating)
     assert issubclass(df.IntCol.dtype.type, np.integer)
@@ -1617,10 +1717,10 @@ def test_default_type_conversion(conn, request):
         assert issubclass(df.BoolColWithNull.dtype.type, np.floating)
 
 
-@pytest.mark.parametrize("conn", mysql_connectable)
-def test_read_procedure(conn, request):
-    conn = request.getfixturevalue(conn)
-    table_uuid = "table_"+create_uuid("test_frame")
+@pytest.mark.parametrize("connect_and_uuid", setup(mysql_connectable, uuid_tables = "test_dataframe_to_sql"), indirect = True)
+def test_read_procedure(connect_and_uuid, request):
+    conn = connect_and_uuid["conn"]
+    table_uuid = connect_and_uuid["table_uuid"]
 
     # GH 7324
     # Although it is more an api test, it is added to the
@@ -1655,12 +1755,15 @@ def test_read_procedure(conn, request):
     tm.assert_frame_equal(df, res2)
 
 
-@pytest.mark.parametrize("conn", postgresql_connectable)
+@pytest.mark.parametrize("connect_and_uuid", setup(postgresql_connectable, uuid_tables = "test_dataframe_to_sql_empty"), indirect = True)
 @pytest.mark.parametrize("expected_count", [2, "Success!"])
-def test_copy_from_callable_insertion_method(conn, expected_count, request):
+def test_copy_from_callable_insertion_method(connect_and_uuid, expected_count, request):
     # GH 8953
     # Example in io.rst found under _io.sql.method
     # not available in sqlite, mysql
+    conn = connect_and_uuid["conn"]
+    table_uuid = connect_and_uuid["table_uuid"]
+
     def psql_insert_copy(table, conn, keys, data_iter):
         # gets a DBAPI connection that can provide a cursor
         dbapi_conn = conn.connection
@@ -1680,8 +1783,7 @@ def test_copy_from_callable_insertion_method(conn, expected_count, request):
             cur.copy_expert(sql=sql_query, file=s_buf)
         return expected_count
 
-    conn = request.getfixturevalue(conn)
-    table_uuid = "table_"+create_uuid("test_frame")
+
     expected = DataFrame({"col1": [1, 2], "col2": [0.1, 0.2], "col3": ["a", "n"]})
     result_count = expected.to_sql(
         name=table_uuid, con=conn, index=False, method=psql_insert_copy
@@ -1695,11 +1797,11 @@ def test_copy_from_callable_insertion_method(conn, expected_count, request):
     tm.assert_frame_equal(result, expected)
 
 
-@pytest.mark.parametrize("conn", postgresql_connectable)
-def test_insertion_method_on_conflict_do_nothing(conn, request):
+@pytest.mark.parametrize("connect_and_uuid", setup(postgresql_connectable, uuid_tables = "test_dataframe_to_sql_empty"), indirect = True)
+def test_insertion_method_on_conflict_do_nothing(connect_and_uuid, request):
     # GH 15988: Example in to_sql docstring
-    conn = request.getfixturevalue(conn)
-    table_uuid = "table_"+create_uuid("test_insert_conflict")
+    conn = connect_and_uuid["conn"]
+    table_uuid = connect_and_uuid["table_uuid"]
 
     from sqlalchemy.dialects.postgresql import insert
     from sqlalchemy.engine import Engine
@@ -1752,17 +1854,19 @@ def test_insertion_method_on_conflict_do_nothing(conn, request):
         pandasSQL.drop_table(table_uuid)
 
 
-@pytest.mark.parametrize("conn", all_connectable)
-def test_to_sql_on_public_schema(conn, request):
-    if "sqlite" in conn or "mysql" in conn:
+@pytest.mark.parametrize("connect_and_uuid", setup(all_connectable, uuid_tables = "test_dataframe_to_sql_empty"), indirect = True)
+def test_to_sql_on_public_schema(connect_and_uuid, request):
+    conn = connect_and_uuid["conn"]
+    table_uuid = connect_and_uuid["table_uuid"]
+    conn_name = connect_and_uuid["conn_name"]
+
+    if "sqlite" in conn_name or "mysql" in conn_name:
         request.applymarker(
             pytest.mark.xfail(
                 reason="test for public schema only specific to postgresql"
             )
         )
 
-    conn = request.getfixturevalue(conn)
-    table_uuid = "table_"+create_uuid("test_public_schema")
 
     test_data = DataFrame([[1, 2.1, "a"], [2, 3.1, "b"]], columns=list("abc"))
     test_data.to_sql(
@@ -1777,11 +1881,11 @@ def test_to_sql_on_public_schema(conn, request):
     tm.assert_frame_equal(test_data, df_out)
 
 
-@pytest.mark.parametrize("conn", mysql_connectable)
-def test_insertion_method_on_conflict_update(conn, request):
+@pytest.mark.parametrize("connect_and_uuid", setup(mysql_connectable, uuid_tables = "test_dataframe_to_sql_empty"), indirect = True)
+def test_insertion_method_on_conflict_update(connect_and_uuid, request):
     # GH 14553: Example in to_sql docstring
-    conn = request.getfixturevalue(conn)
-    table_uuid = "table_"+create_uuid("test_insert_conflict")
+    conn = connect_and_uuid["conn"]
+    table_uuid = connect_and_uuid["table_uuid"]
 
     from sqlalchemy.dialects.mysql import insert
     from sqlalchemy.engine import Engine
@@ -1834,7 +1938,7 @@ def test_insertion_method_on_conflict_update(conn, request):
 
 
 
-@pytest.mark.parametrize("connect_and_uuid", setup(postgresql_connectable, "test_read_view_postgres"), indirect = True)
+@pytest.mark.parametrize("connect_and_uuid", setup(postgresql_connectable, uuid_tables="test_read_view_postgres", uuid_views="test_read_view_postgres"), indirect = True)
 def test_read_view_postgres(connect_and_uuid, request):
     # GH 52969
     # conn = request.getfixturevalue(conn)
@@ -1843,21 +1947,21 @@ def test_read_view_postgres(connect_and_uuid, request):
 
     from sqlalchemy.engine import Engine
     from sqlalchemy.sql import text
-    conn, uuid = connect_and_uuid
-    table_name = "table_"+uuid
-    view_name = "view_"+uuid
+    conn = connect_and_uuid["conn"]
+    table_uuid = connect_and_uuid["table_uuid"]
+    view_uuid = connect_and_uuid["view_uuid"]
 
     sql_stmt = text(
         f"""
-    CREATE TABLE {table_name} (
+    CREATE TABLE {table_uuid} (
         group_id INTEGER,
         name TEXT
     );
-    INSERT INTO {table_name} VALUES
+    INSERT INTO {table_uuid} VALUES
         (1, 'name');
-    CREATE VIEW {view_name}
+    CREATE VIEW {view_uuid}
     AS
-    SELECT * FROM {table_name};
+    SELECT * FROM {table_uuid};
     """
     )
     request
@@ -1868,15 +1972,18 @@ def test_read_view_postgres(connect_and_uuid, request):
     else:
         with conn.begin():
             conn.execute(sql_stmt)
-    result = read_sql_table(view_name, conn)
+    result = read_sql_table(view_uuid, conn)
     expected = DataFrame({"group_id": [1], "name": "name"})
     tm.assert_frame_equal(result, expected)
 
 
-def test_read_view_sqlite(sqlite_buildin):
+@pytest.mark.parametrize("connect_and_uuid", setup(['sqlite_buildin'], uuid_tables = "test_dataframe_to_sql", uuid_views = "test_dataframe_to_sql"), indirect = True)
+def test_read_view_sqlite(connect_and_uuid):
     # GH 52969
-    table_uuid = "table_"+create_uuid("groups")
-    view_uuid = "view_"+create_uuid("group_view")
+    conn = connect_and_uuid["conn"]
+    table_uuid = connect_and_uuid["table_uuid"]
+    view_uuid = connect_and_uuid["view_uuid"]
+
 
     create_table = f"""
 CREATE TABLE {table_uuid} (
@@ -1893,10 +2000,10 @@ CREATE VIEW {view_uuid}
 AS
 SELECT * FROM {table_uuid};
 """
-    sqlite_buildin.execute(create_table)
-    sqlite_buildin.execute(insert_into)
-    sqlite_buildin.execute(create_view)
-    result = pd.read_sql(f"SELECT * FROM {view_uuid}", sqlite_buildin)
+    conn.execute(create_table)
+    conn.execute(insert_into)
+    conn.execute(create_view)
+    result = pd.read_sql(f"SELECT * FROM {view_uuid}", conn)
     expected = DataFrame({"group_id": [1], "name": "name"})
     tm.assert_frame_equal(result, expected)
 
@@ -2011,24 +2118,24 @@ def test_api_read_sql_view(iris_connect_and_per_test_id, request):
 
 
 @pytest.mark.parametrize("iris_connect_and_per_test_id", setup(all_connectable_iris), indirect = True)
-def test_api_read_sql_with_chunksize_no_result(conn, iris_connect_and_per_test_id, request):
+def test_api_read_sql_with_chunksize_no_result(iris_connect_and_per_test_id, request):
     conn = iris_connect_and_per_test_id['conn']
-    iris_uuid = iris_connect_and_per_test_id['iris_table_uuid']
+    iris_view_uuid = iris_connect_and_per_test_id['iris_view_uuid']
     conn_name = iris_connect_and_per_test_id['conn_name']
     if "adbc" in conn_name:
         request.node.add_marker(
             pytest.mark.xfail(reason="chunksize argument NotImplemented with ADBC")
         )
-    query = 'SELECT * FROM iris_view WHERE "SepalLength" < 0.0'
+    query = f'SELECT * FROM {iris_view_uuid} WHERE "SepalLength" < 0.0'
     with_batch = sql.read_sql_query(query, conn, chunksize=5)
     without_batch = sql.read_sql_query(query, conn)
     tm.assert_frame_equal(concat(with_batch), without_batch)
 
 
-@pytest.mark.parametrize("conn", all_connectable)
-def test_api_to_sql(conn, request, test_frame1):
-    conn = request.getfixturevalue(conn)
-    table_uuid = "table_"+create_uuid("test_frame1")
+@pytest.mark.parametrize("connect_and_uuid", setup(all_connectable, uuid_tables = "test_dataframe_to_sql_empty"), indirect = True)
+def test_api_to_sql(connect_and_uuid, request, test_frame1):
+    conn = connect_and_uuid["conn"]
+    table_uuid = connect_and_uuid["table_uuid"]
     if sql.has_table(table_uuid, conn):
         with sql.SQLDatabase(conn, need_transaction=True) as pandasSQL:
             pandasSQL.drop_table(table_uuid)
@@ -2037,10 +2144,10 @@ def test_api_to_sql(conn, request, test_frame1):
     assert sql.has_table(table_uuid, conn)
 
 
-@pytest.mark.parametrize("conn", all_connectable)
-def test_api_to_sql_fail(conn, request, test_frame1):
-    conn = request.getfixturevalue(conn)
-    table_uuid = "table_"+create_uuid("test_frame2")
+@pytest.mark.parametrize("connect_and_uuid", setup(all_connectable, uuid_tables = "test_dataframe_to_sql"), indirect = True)
+def test_api_to_sql_fail(connect_and_uuid, request, test_frame1):
+    conn = connect_and_uuid["conn"]
+    table_uuid = connect_and_uuid["table_uuid"]
     if sql.has_table(table_uuid, conn):
         with sql.SQLDatabase(conn, need_transaction=True) as pandasSQL:
             pandasSQL.drop_table(table_uuid)
@@ -2053,10 +2160,10 @@ def test_api_to_sql_fail(conn, request, test_frame1):
         sql.to_sql(test_frame1, table_uuid, conn, if_exists="fail")
 
 
-@pytest.mark.parametrize("conn", all_connectable)
-def test_api_to_sql_replace(conn, request, test_frame1):
-    conn = request.getfixturevalue(conn)
-    table_uuid = "table_"+create_uuid("test_frame3")
+@pytest.mark.parametrize("connect_and_uuid", setup(all_connectable, uuid_tables = "test_dataframe_to_sql_empty"), indirect = True)
+def test_api_to_sql_replace(connect_and_uuid, request, test_frame1):
+    conn = connect_and_uuid["conn"]
+    table_uuid = connect_and_uuid["table_uuid"]
     if sql.has_table(table_uuid, conn):
         with sql.SQLDatabase(conn, need_transaction=True) as pandasSQL:
             pandasSQL.drop_table(table_uuid)
@@ -2072,10 +2179,10 @@ def test_api_to_sql_replace(conn, request, test_frame1):
     assert num_rows == num_entries
 
 
-@pytest.mark.parametrize("conn", all_connectable)
-def test_api_to_sql_append(conn, request, test_frame1):
-    conn = request.getfixturevalue(conn)
-    table_uuid = "table_"+create_uuid("test_frame4")
+@pytest.mark.parametrize("connect_and_uuid", setup(all_connectable, uuid_tables = "test_dataframe_to_sql_empty"), indirect = True)
+def test_api_to_sql_append(connect_and_uuid, request, test_frame1):
+    conn = connect_and_uuid["conn"]
+    table_uuid = connect_and_uuid["table_uuid"]
     if sql.has_table(table_uuid, conn):
         with sql.SQLDatabase(conn, need_transaction=True) as pandasSQL:
             pandasSQL.drop_table(table_uuid)
@@ -2092,10 +2199,10 @@ def test_api_to_sql_append(conn, request, test_frame1):
     assert num_rows == num_entries
 
 
-@pytest.mark.parametrize("conn", all_connectable)
-def test_api_to_sql_type_mapping(conn, request, test_frame3):
-    conn = request.getfixturevalue(conn)
-    table_uuid = "table_"+create_uuid("test_frame5")
+@pytest.mark.parametrize("connect_and_uuid", setup(all_connectable, uuid_tables = "test_dataframe_to_sql_empty"), indirect = True)
+def test_api_to_sql_type_mapping(connect_and_uuid, request, test_frame3):
+    conn = connect_and_uuid["conn"]
+    table_uuid = connect_and_uuid["table_uuid"]
     if sql.has_table(table_uuid, conn):
         with sql.SQLDatabase(conn, need_transaction=True) as pandasSQL:
             pandasSQL.drop_table(table_uuid)
@@ -2106,10 +2213,10 @@ def test_api_to_sql_type_mapping(conn, request, test_frame3):
     tm.assert_frame_equal(test_frame3, result)
 
 
-@pytest.mark.parametrize("conn", all_connectable)
-def test_api_to_sql_series(conn, request):
-    conn = request.getfixturevalue(conn)
-    table_uuid = "table_"+create_uuid("test_series")
+@pytest.mark.parametrize("connect_and_uuid", setup(all_connectable, uuid_tables = "test_dataframe_to_sql_empty"), indirect = True)
+def test_api_to_sql_series(connect_and_uuid, request):
+    conn = connect_and_uuid["conn"]
+    table_uuid = connect_and_uuid["table_uuid"]
     if sql.has_table(table_uuid, conn):
         with sql.SQLDatabase(conn, need_transaction=True) as pandasSQL:
             pandasSQL.drop_table(table_uuid)
@@ -2120,11 +2227,13 @@ def test_api_to_sql_series(conn, request):
     tm.assert_frame_equal(s.to_frame(), s2)
 
 
-@pytest.mark.parametrize("conn", all_connectable)
-def test_api_roundtrip(conn, request, test_frame1):
-    conn_name = conn
-    conn = request.getfixturevalue(conn)
-    table_uuid = "table_"+create_uuid("test_frame_roundtrip")
+@pytest.mark.parametrize("connect_and_uuid", setup(all_connectable, uuid_tables = "test_dataframe_to_sql_empty"), indirect = True)
+def test_api_roundtrip(connect_and_uuid, request, test_frame1):
+    conn = connect_and_uuid["conn"]
+    table_uuid = connect_and_uuid["table_uuid"]
+    conn_name = connect_and_uuid["conn_name"]
+
+
     if sql.has_table(table_uuid, conn):
         with sql.SQLDatabase(conn, need_transaction=True) as pandasSQL:
             pandasSQL.drop_table(table_uuid)
@@ -2140,14 +2249,17 @@ def test_api_roundtrip(conn, request, test_frame1):
     tm.assert_frame_equal(result, test_frame1)
 
 
-@pytest.mark.parametrize("conn", all_connectable)
-def test_api_roundtrip_chunksize(conn, request, test_frame1):
-    if "adbc" in conn:
+@pytest.mark.parametrize("connect_and_uuid", setup(all_connectable, uuid_tables = "test_dataframe_to_sql_empty"), indirect = True)
+def test_api_roundtrip_chunksize(connect_and_uuid, request, test_frame1):
+    conn = connect_and_uuid["conn"]
+    table_uuid = connect_and_uuid["table_uuid"]
+    conn_name = connect_and_uuid["conn_name"]
+
+    if "adbc" in conn_name:
         request.node.add_marker(
             pytest.mark.xfail(reason="chunksize argument NotImplemented with ADBC")
         )
-    conn = request.getfixturevalue(conn)
-    table_uuid = "table_"+create_uuid("test_frame_roundtrip")
+
     if sql.has_table(table_uuid, conn):
         with sql.SQLDatabase(conn, need_transaction=True) as pandasSQL:
             pandasSQL.drop_table(table_uuid)
@@ -2177,17 +2289,18 @@ def test_api_execute_sql(iris_connect_and_per_test_id, request):
     assert list(row) == [5.1, 3.5, 1.4, 0.2, "Iris-setosa"]
 
 
-@pytest.mark.parametrize("conn", all_connectable_types)
-def test_api_date_parsing(conn, request):
-    conn_name = conn
-    conn = request.getfixturevalue(conn)
+@pytest.mark.parametrize("connect_and_uuid", setup(all_connectable_types, uuid_tables = "test_dataframe_to_sql_empty"), indirect = True)
+def test_api_date_parsing(connect_and_uuid, request):
+    conn = connect_and_uuid["conn"]
+    table_uuid = connect_and_uuid["table_uuid"]
+    conn_name = connect_and_uuid["conn_name"]
     # Test date parsing in read_sql
     # No Parsing
-    df = sql.read_sql_query("SELECT * FROM types", conn)
+    df = sql.read_sql_query(f"SELECT * FROM {table_uuid}", conn)
     if not ("mysql" in conn_name or "postgres" in conn_name):
         assert not issubclass(df.DateCol.dtype.type, np.datetime64)
 
-    df = sql.read_sql_query("SELECT * FROM types", conn, parse_dates=["DateCol"])
+    df = sql.read_sql_query(f"SELECT * FROM {table_uuid}", conn, parse_dates=["DateCol"])
     assert issubclass(df.DateCol.dtype.type, np.datetime64)
     assert df.DateCol.tolist() == [
         Timestamp(2000, 1, 3, 0, 0, 0),
@@ -2195,7 +2308,7 @@ def test_api_date_parsing(conn, request):
     ]
 
     df = sql.read_sql_query(
-        "SELECT * FROM types",
+        f"SELECT * FROM {table_uuid}",
         conn,
         parse_dates={"DateCol": "%Y-%m-%d %H:%M:%S"},
     )
@@ -2205,7 +2318,7 @@ def test_api_date_parsing(conn, request):
         Timestamp(2000, 1, 4, 0, 0, 0),
     ]
 
-    df = sql.read_sql_query("SELECT * FROM types", conn, parse_dates=["IntDateCol"])
+    df = sql.read_sql_query(f"SELECT * FROM {table_uuid}", conn, parse_dates=["IntDateCol"])
     assert issubclass(df.IntDateCol.dtype.type, np.datetime64)
     assert df.IntDateCol.tolist() == [
         Timestamp(1986, 12, 25, 0, 0, 0),
@@ -2213,7 +2326,7 @@ def test_api_date_parsing(conn, request):
     ]
 
     df = sql.read_sql_query(
-        "SELECT * FROM types", conn, parse_dates={"IntDateCol": "s"}
+        f"SELECT * FROM {table_uuid}", conn, parse_dates={"IntDateCol": "s"}
     )
     assert issubclass(df.IntDateCol.dtype.type, np.datetime64)
     assert df.IntDateCol.tolist() == [
@@ -2222,7 +2335,7 @@ def test_api_date_parsing(conn, request):
     ]
 
     df = sql.read_sql_query(
-        "SELECT * FROM types",
+        f"SELECT * FROM {table_uuid}",
         conn,
         parse_dates={"IntDateOnlyCol": "%Y%m%d"},
     )
@@ -2233,7 +2346,7 @@ def test_api_date_parsing(conn, request):
     ]
 
 
-@pytest.mark.parametrize("conn", all_connectable_types)
+@pytest.mark.parametrize("connect_and_uuid", setup(all_connectable_types, uuid_tables = "test_dataframe_to_sql"), indirect = True)
 @pytest.mark.parametrize("error", ["raise", "coerce"])
 @pytest.mark.parametrize(
     "read_sql, text, mode",
@@ -2249,14 +2362,16 @@ def test_api_date_parsing(conn, request):
     ],
 )
 def test_api_custom_dateparsing_error(
-    conn, request, read_sql, text, mode, error, types_data_frame
+    connect_and_uuid, request, read_sql, text, mode, error, types_data_frame
 ):
-    conn_name = conn
-    conn = request.getfixturevalue(conn)
+    conn = connect_and_uuid["conn"]
+    table_uuid = connect_and_uuid["table_uuid"]
+    conn_name = connect_and_uuid["conn_name"]
     if text == "types" and conn_name == "sqlite_buildin_types":
         request.applymarker(
             pytest.mark.xfail(reason="failing combination of arguments")
         )
+    text = text.replace("types", table_uuid)
 
     expected = types_data_frame.astype({"DateCol": "datetime64[s]"})
 
@@ -2290,12 +2405,13 @@ def test_api_custom_dateparsing_error(
     tm.assert_frame_equal(result, expected)
 
 
-@pytest.mark.parametrize("conn", all_connectable_types)
-def test_api_date_and_index(conn, request):
+@pytest.mark.parametrize("connect_and_uuid", setup(all_connectable_types, uuid_tables = "test_dataframe_to_sql"), indirect = True)
+def test_api_date_and_index(connect_and_uuid, request):
     # Test case where same column appears in parse_date and index_col
-    conn = request.getfixturevalue(conn)
+    conn = connect_and_uuid["conn"]
+    table_uuid = connect_and_uuid["table_uuid"]
     df = sql.read_sql_query(
-        "SELECT * FROM types",
+        f"SELECT * FROM {table_uuid}",
         conn,
         index_col="DateCol",
         parse_dates=["DateCol", "IntDateCol"],
@@ -2305,12 +2421,13 @@ def test_api_date_and_index(conn, request):
     assert issubclass(df.IntDateCol.dtype.type, np.datetime64)
 
 
-@pytest.mark.parametrize("conn", all_connectable)
-def test_api_timedelta(conn, request):
+@pytest.mark.parametrize("connect_and_uuid", setup(all_connectable, uuid_tables = "test_dataframe_to_sql"), indirect = True)
+def test_api_timedelta(connect_and_uuid, request):
     # see #6921
-    conn_name = conn
-    conn = request.getfixturevalue(conn)
-    table_uuid = "table_"+create_uuid("test_timedelta")
+    conn = connect_and_uuid["conn"]
+    table_uuid = connect_and_uuid["table_uuid"]
+    conn_name = connect_and_uuid["conn_name"]
+
     if sql.has_table(table_uuid, conn):
         with sql.SQLDatabase(conn, need_transaction=True) as pandasSQL:
             pandasSQL.drop_table(table_uuid)
@@ -2353,11 +2470,12 @@ def test_api_timedelta(conn, request):
     tm.assert_series_equal(result["foo"], expected)
 
 
-@pytest.mark.parametrize("conn", all_connectable)
-def test_api_complex_raises(conn, request):
-    conn_name = conn
-    conn = request.getfixturevalue(conn)
-    table_uuid = "table_"+create_uuid("test_complex")
+@pytest.mark.parametrize("connect_and_uuid", setup(all_connectable, uuid_tables = "test_dataframe_to_sql"), indirect = True)
+def test_api_complex_raises(connect_and_uuid, request):
+    conn = connect_and_uuid["conn"]
+    table_uuid = connect_and_uuid["table_uuid"]
+    conn_name = connect_and_uuid["conn_name"]
+
     df = DataFrame({"a": [1 + 1j, 2j]})
 
     if "adbc" in conn_name:
@@ -2368,7 +2486,7 @@ def test_api_complex_raises(conn, request):
         assert df.to_sql(table_uuid, con=conn) is None
 
 
-@pytest.mark.parametrize("conn", all_connectable)
+@pytest.mark.parametrize("connect_and_uuid", setup(all_connectable, uuid_tables = "test_dataframe_to_sql"), indirect = True)
 @pytest.mark.parametrize(
     "index_name,index_label,expected",
     [
@@ -2386,13 +2504,15 @@ def test_api_complex_raises(conn, request):
         (None, 0, "0"),
     ],
 )
-def test_api_to_sql_index_label(conn, request, index_name, index_label, expected):
-    if "adbc" in conn:
+def test_api_to_sql_index_label(connect_and_uuid, request, index_name, index_label, expected):
+    conn = connect_and_uuid["conn"]
+    table_uuid = connect_and_uuid["table_uuid"]
+    conn_name = connect_and_uuid["conn_name"]
+
+    if "adbc" in conn_name:
         request.node.add_marker(
             pytest.mark.xfail(reason="index_label argument NotImplemented with ADBC")
         )
-    conn = request.getfixturevalue(conn)
-    table_uuid = "table_"+create_uuid("test_index_label")
     if sql.has_table(table_uuid, conn):
         with sql.SQLDatabase(conn, need_transaction=True) as pandasSQL:
             pandasSQL.drop_table(table_uuid)
@@ -2405,9 +2525,12 @@ def test_api_to_sql_index_label(conn, request, index_name, index_label, expected
     assert frame.columns[0] == expected
 
 
-@pytest.mark.parametrize("conn", all_connectable)
-def test_api_to_sql_index_label_multiindex(conn, request):
-    conn_name = conn
+@pytest.mark.parametrize("connect_and_uuid", setup(all_connectable, uuid_tables = "test_dataframe_to_sql"), indirect = True)
+def test_api_to_sql_index_label_multiindex(connect_and_uuid, request):
+    conn = connect_and_uuid["conn"]
+    table_uuid = connect_and_uuid["table_uuid"]
+    conn_name = connect_and_uuid["conn_name"]
+
     if "mysql" in conn_name:
         request.applymarker(
             pytest.mark.xfail(
@@ -2419,8 +2542,6 @@ def test_api_to_sql_index_label_multiindex(conn, request):
             pytest.mark.xfail(reason="index_label argument NotImplemented with ADBC")
         )
 
-    conn = request.getfixturevalue(conn)
-    table_uuid = "table_"+create_uuid("test_index_label")
     if sql.has_table(table_uuid, conn):
         with sql.SQLDatabase(conn, need_transaction=True) as pandasSQL:
             pandasSQL.drop_table(table_uuid)
@@ -2480,10 +2601,12 @@ def test_api_to_sql_index_label_multiindex(conn, request):
         )
 
 
-@pytest.mark.parametrize("conn", all_connectable)
-def test_api_multiindex_roundtrip(conn, request):
-    conn = request.getfixturevalue(conn)
-    table_uuid = "table_"+create_uuid("test_multiindex_roundtrip")
+@pytest.mark.parametrize("connect_and_uuid", setup(all_connectable, uuid_tables = "test_dataframe_to_sql"), indirect = True)
+def test_api_multiindex_roundtrip(connect_and_uuid, request):
+    conn = connect_and_uuid["conn"]
+    table_uuid = connect_and_uuid["table_uuid"]
+    conn_name = connect_and_uuid["conn_name"]
+
     if sql.has_table(table_uuid, conn):
         with sql.SQLDatabase(conn, need_transaction=True) as pandasSQL:
             pandasSQL.drop_table(table_uuid)
@@ -2501,7 +2624,7 @@ def test_api_multiindex_roundtrip(conn, request):
     tm.assert_frame_equal(df, result, check_index_type=True)
 
 
-@pytest.mark.parametrize("conn", all_connectable)
+@pytest.mark.parametrize("connect_and_uuid", setup(all_connectable, uuid_tables = "test_dataframe_to_sql"), indirect = True)
 @pytest.mark.parametrize(
     "dtype",
     [
@@ -2511,11 +2634,12 @@ def test_api_multiindex_roundtrip(conn, request):
         {"A": int, "B": float},
     ],
 )
-def test_api_dtype_argument(conn, request, dtype):
+def test_api_dtype_argument(connect_and_uuid, request, dtype):
     # GH10285 Add dtype argument to read_sql_query
-    conn_name = conn
-    conn = request.getfixturevalue(conn)
-    table_uuid = "table_"+create_uuid("test_dtype_argument")
+    conn = connect_and_uuid["conn"]
+    table_uuid = connect_and_uuid["table_uuid"]
+    conn_name = connect_and_uuid["conn_name"]
+
     if sql.has_table(table_uuid, conn):
         with sql.SQLDatabase(conn, need_transaction=True) as pandasSQL:
             pandasSQL.drop_table(table_uuid)
@@ -2534,56 +2658,62 @@ def test_api_dtype_argument(conn, request, dtype):
     tm.assert_frame_equal(result, expected)
 
 
-@pytest.mark.parametrize("conn", all_connectable)
-def test_api_integer_col_names(conn, request):
-    conn = request.getfixturevalue(conn)
-    table_uuid = "table_"+create_uuid("test_frame_integer_col_names")
+@pytest.mark.parametrize("connect_and_uuid", setup(all_connectable, uuid_tables = "test_dataframe_to_sql"), indirect = True)
+def test_api_integer_col_names(connect_and_uuid, request):
+    conn = connect_and_uuid["conn"]
+    table_uuid = connect_and_uuid["table_uuid"]
     df = DataFrame([[1, 2], [3, 4]], columns=[0, 1])
     sql.to_sql(df, table_uuid, conn, if_exists="replace")
 
 
-@pytest.mark.parametrize("conn", all_connectable)
-def test_api_get_schema(conn, request, test_frame1):
-    if "adbc" in conn:
+@pytest.mark.parametrize("connect_and_uuid", setup(all_connectable, uuid_tables = "test_dataframe_to_sql"), indirect = True)
+def test_api_get_schema(connect_and_uuid, request, test_frame1):
+    conn = connect_and_uuid["conn"]
+    table_uuid = connect_and_uuid["table_uuid"]
+    conn_name = connect_and_uuid["conn_name"]
+
+    if "adbc" in conn_name:
         request.node.add_marker(
             pytest.mark.xfail(
                 reason="'get_schema' not implemented for ADBC drivers",
                 strict=True,
             )
         )
-    conn = request.getfixturevalue(conn)
-    table_uuid = "table_"+create_uuid("test")
     create_sql = sql.get_schema(test_frame1, table_uuid, con=conn)
     assert "CREATE" in create_sql
 
 
-@pytest.mark.parametrize("conn", all_connectable)
-def test_api_get_schema_with_schema(conn, request, test_frame1):
+@pytest.mark.parametrize("connect_and_uuid", setup(all_connectable, uuid_tables = "test_dataframe_to_sql"), indirect = True)
+def test_api_get_schema_with_schema(connect_and_uuid, request, test_frame1):
     # GH28486
-    if "adbc" in conn:
+    conn = connect_and_uuid["conn"]
+    table_uuid = connect_and_uuid["table_uuid"]
+    conn_name = connect_and_uuid["conn_name"]
+
+    if "adbc" in conn_name:
         request.node.add_marker(
             pytest.mark.xfail(
                 reason="'get_schema' not implemented for ADBC drivers",
                 strict=True,
             )
         )
-    conn = request.getfixturevalue(conn)
-    table_uuid = "table_"+create_uuid("test")
     create_sql = sql.get_schema(test_frame1, table_uuid, con=conn, schema="pypi")
     assert "CREATE TABLE pypi." in create_sql
 
 
-@pytest.mark.parametrize("conn", all_connectable)
-def test_api_get_schema_dtypes(conn, request):
-    if "adbc" in conn:
+@pytest.mark.parametrize("connect_and_uuid", setup(all_connectable, uuid_tables = "test_dataframe_to_sql"), indirect = True)
+def test_api_get_schema_dtypes(connect_and_uuid, request):
+    conn = connect_and_uuid["conn"]
+    table_uuid = connect_and_uuid["table_uuid"]
+    conn_name = connect_and_uuid["conn_name"]
+
+    if "adbc" in conn_name:
         request.node.add_marker(
             pytest.mark.xfail(
                 reason="'get_schema' not implemented for ADBC drivers",
                 strict=True,
             )
         )
-    conn_name = conn
-    conn = request.getfixturevalue(conn)
     float_frame = DataFrame({"a": [1.1, 1.2], "b": [2.1, 2.2]})
 
     if conn_name == "sqlite_buildin":
@@ -2592,25 +2722,27 @@ def test_api_get_schema_dtypes(conn, request):
         from sqlalchemy import Integer
 
         dtype = Integer
-    table_uuid = "table_"+create_uuid("test")
     create_sql = sql.get_schema(float_frame, table_uuid, con=conn, dtype={"b": dtype})
     assert "CREATE" in create_sql
     assert "INTEGER" in create_sql
 
 
-@pytest.mark.parametrize("conn", all_connectable)
-def test_api_get_schema_keys(conn, request, test_frame1):
-    if "adbc" in conn:
+@pytest.mark.parametrize("connect_and_uuid", setup(all_connectable, uuid_tables = "test_dataframe_to_sql"), indirect = True)
+def test_api_get_schema_keys(connect_and_uuid, request, test_frame1):
+    conn = connect_and_uuid["conn"]
+    table_uuid = connect_and_uuid["table_uuid"]
+    conn_name = connect_and_uuid["conn_name"]
+
+    if "adbc" in conn_name:
         request.node.add_marker(
             pytest.mark.xfail(
                 reason="'get_schema' not implemented for ADBC drivers",
                 strict=True,
             )
         )
-    conn_name = conn
-    conn = request.getfixturevalue(conn)
+
     frame = DataFrame({"Col1": [1.1, 1.2], "Col2": [2.1, 2.2]})
-    table_uuid = "table_"+create_uuid("test")
+
     create_sql = sql.get_schema(frame, table_uuid, con=conn, keys="Col1")
 
     if "mysql" in conn_name:
@@ -2628,15 +2760,17 @@ def test_api_get_schema_keys(conn, request, test_frame1):
     assert constraint_sentence in create_sql
 
 
-@pytest.mark.parametrize("conn", all_connectable)
-def test_api_chunksize_read(conn, request):
-    if "adbc" in conn:
+@pytest.mark.parametrize("connect_and_uuid", setup(all_connectable, uuid_tables = "test_dataframe_to_sql"), indirect = True)
+def test_api_chunksize_read(connect_and_uuid, request):
+    conn = connect_and_uuid["conn"]
+    table_uuid = connect_and_uuid["table_uuid"]
+    conn_name = connect_and_uuid["conn_name"]
+
+    if "adbc" in conn_name:
         request.node.add_marker(
             pytest.mark.xfail(reason="chunksize argument NotImplemented with ADBC")
         )
-    conn_name = conn
-    conn = request.getfixturevalue(conn)
-    table_uuid = "table_"+create_uuid("test_chunksize")
+
     if sql.has_table(table_uuid, conn):
         with sql.SQLDatabase(conn, need_transaction=True) as pandasSQL:
             pandasSQL.drop_table(table_uuid)
@@ -2678,9 +2812,13 @@ def test_api_chunksize_read(conn, request):
         tm.assert_frame_equal(res1, res3)
 
 
-@pytest.mark.parametrize("conn", all_connectable)
-def test_api_categorical(conn, request):
-    if conn == "postgresql_adbc_conn":
+@pytest.mark.parametrize("connect_and_uuid", setup(all_connectable, uuid_tables = "test_dataframe_to_sql"), indirect = True)
+def test_api_categorical(connect_and_uuid, request):
+    conn = connect_and_uuid["conn"]
+    table_uuid = connect_and_uuid["table_uuid"]
+    conn_name = connect_and_uuid["conn_name"]
+
+    if conn_name == "postgresql_adbc_conn":
         adbc = import_optional_dependency("adbc_driver_postgresql", errors="ignore")
         if adbc is not None and Version(adbc.__version__) < Version("0.9.0"):
             request.node.add_marker(
@@ -2691,8 +2829,7 @@ def test_api_categorical(conn, request):
             )
     # GH8624
     # test that categorical gets written correctly as dense column
-    conn = request.getfixturevalue(conn)
-    table_uuid = "table_"+create_uuid("test_categorical")
+
     if sql.has_table(table_uuid, conn):
         with sql.SQLDatabase(conn, need_transaction=True) as pandasSQL:
             pandasSQL.drop_table(table_uuid)
@@ -2712,11 +2849,11 @@ def test_api_categorical(conn, request):
     tm.assert_frame_equal(res, df)
 
 
-@pytest.mark.parametrize("conn", all_connectable)
-def test_api_unicode_column_name(conn, request):
+@pytest.mark.parametrize("connect_and_uuid", setup(all_connectable, uuid_tables = "test_dataframe_to_sql"), indirect = True)
+def test_api_unicode_column_name(connect_and_uuid, request):
     # GH 11431
-    conn = request.getfixturevalue(conn)
-    table_uuid = "table_"+create_uuid("test_unicode")
+    conn = connect_and_uuid["conn"]
+    table_uuid = connect_and_uuid["table_uuid"]
     if sql.has_table(table_uuid, conn):
         with sql.SQLDatabase(conn, need_transaction=True) as pandasSQL:
             pandasSQL.drop_table(table_uuid)
@@ -2725,12 +2862,13 @@ def test_api_unicode_column_name(conn, request):
     df.to_sql(name=table_uuid, con=conn, index=False)
 
 
-@pytest.mark.parametrize("conn", all_connectable)
-def test_api_escaped_table_name(conn, request):
+@pytest.mark.parametrize("connect_and_uuid", setup(all_connectable, uuid_tables = "test_dataframe_to_sql"), indirect = True)
+def test_api_escaped_table_name(connect_and_uuid, request):
     # GH 13206
-    conn_name = conn
-    conn = request.getfixturevalue(conn)
-    table_uuid = "table_"+create_uuid("d1187b08-4943-4c8d-a7f6")
+    conn = connect_and_uuid["conn"]
+    table_uuid = connect_and_uuid["table_uuid"]
+    conn_name = connect_and_uuid["conn_name"]
+
     if sql.has_table(table_uuid, conn):
         with sql.SQLDatabase(conn, need_transaction=True) as pandasSQL:
             pandasSQL.drop_table(table_uuid)
@@ -2747,22 +2885,25 @@ def test_api_escaped_table_name(conn, request):
     tm.assert_frame_equal(res, df)
 
 
-@pytest.mark.parametrize("conn", all_connectable)
-def test_api_read_sql_duplicate_columns(conn, request):
+@pytest.mark.parametrize("connect_and_uuid", setup(all_connectable, uuid_tables = "test_dataframe_to_sql"), indirect = True)
+def test_api_read_sql_duplicate_columns(connect_and_uuid, request):
     # GH#53117
-    if "adbc" in conn:
+    conn = connect_and_uuid["conn"]
+    table_uuid = connect_and_uuid["table_uuid"]
+    conn_name = connect_and_uuid["conn_name"]
+
+    if "adbc" in conn_name:
         pa = pytest.importorskip("pyarrow")
         if not (
             Version(pa.__version__) >= Version("16.0")
-            and conn in ["sqlite_adbc_conn", "postgresql_adbc_conn"]
+            and conn_name in ["sqlite_adbc_conn", "postgresql_adbc_conn"]
         ):
             request.node.add_marker(
                 pytest.mark.xfail(
                     reason="pyarrow->pandas throws ValueError", strict=True
                 )
             )
-    conn = request.getfixturevalue(conn)
-    table_uuid = "table_"+create_uuid("test_table")
+
     if sql.has_table(table_uuid, conn):
         with sql.SQLDatabase(conn, need_transaction=True) as pandasSQL:
             pandasSQL.drop_table(table_uuid)
@@ -2778,15 +2919,17 @@ def test_api_read_sql_duplicate_columns(conn, request):
     tm.assert_frame_equal(result, expected)
 
 
-@pytest.mark.parametrize("conn", all_connectable)
-def test_read_table_columns(conn, request, test_frame1):
+@pytest.mark.parametrize("connect_and_uuid", setup(all_connectable, uuid_tables = "test_dataframe_to_sql"), indirect = True)
+def test_read_table_columns(connect_and_uuid, request, test_frame1):
     # test columns argument in read_table
-    conn_name = conn
+    conn = connect_and_uuid["conn"]
+    table_uuid = connect_and_uuid["table_uuid"]
+    conn_name = connect_and_uuid["conn_name"]
+
     if conn_name == "sqlite_buildin":
         request.applymarker(pytest.mark.xfail(reason="Not Implemented"))
 
-    conn = request.getfixturevalue(conn)
-    table_uuid = "table_"+create_uuid("test_frame")
+
     sql.to_sql(test_frame1, table_uuid, conn)
 
     cols = ["A", "B"]
@@ -2795,15 +2938,17 @@ def test_read_table_columns(conn, request, test_frame1):
     assert result.columns.tolist() == cols
 
 
-@pytest.mark.parametrize("conn", all_connectable)
-def test_read_table_index_col(conn, request, test_frame1):
+@pytest.mark.parametrize("connect_and_uuid", setup(all_connectable, uuid_tables = "test_dataframe_to_sql"), indirect = True)
+def test_read_table_index_col(connect_and_uuid, request, test_frame1):
     # test columns argument in read_table
-    conn_name = conn
+    conn = connect_and_uuid["conn"]
+    table_uuid = connect_and_uuid["table_uuid"]
+    conn_name = connect_and_uuid["conn_name"]
+
     if conn_name == "sqlite_buildin":
         request.applymarker(pytest.mark.xfail(reason="Not Implemented"))
 
-    conn = request.getfixturevalue(conn)
-    table_uuid = "table_"+create_uuid("test_frame")
+
     sql.to_sql(test_frame1, table_uuid, conn)
 
     result = sql.read_sql_table(table_uuid, conn, index_col="index")
@@ -2833,12 +2978,12 @@ def test_read_sql_delegate(iris_connect_and_per_test_id, request):
         )
 
 
-    iris_frame1 = sql.read_sql_query(f"SELECT * FROM {iris_table}", conn)
-    iris_frame2 = sql.read_sql(f"SELECT * FROM {iris_table}", conn)
+    iris_frame1 = sql.read_sql_query(f"SELECT * FROM {iris_uuid}", conn)
+    iris_frame2 = sql.read_sql(f"SELECT * FROM {iris_uuid}", conn)
     tm.assert_frame_equal(iris_frame1, iris_frame2)
 
-    iris_frame1 = sql.read_sql_table(iris_table, conn)
-    iris_frame2 = sql.read_sql(iris_table, conn)
+    iris_frame1 = sql.read_sql_table(iris_uuid, conn)
+    iris_frame2 = sql.read_sql(iris_uuid, conn)
     tm.assert_frame_equal(iris_frame1, iris_frame2)
 
 
@@ -2847,8 +2992,8 @@ def test_not_reflect_all_tables(sqlite_conn):
     from sqlalchemy import text
     from sqlalchemy.engine import Engine
 
-    invalid_uuid = create_uuid("invalid")
-    other_uuid = create_uuid("other_table")
+    invalid_uuid = create_uuid()("invalid")
+    other_uuid = create_uuid()("other_table")
 
     # create invalid table
     query_list = [
@@ -2870,14 +3015,15 @@ def test_not_reflect_all_tables(sqlite_conn):
         sql.read_sql_query(f"SELECT * FROM {other_uuid}", conn)
 
 
-@pytest.mark.parametrize("conn", all_connectable)
-def test_warning_case_insensitive_table_name(conn, request, test_frame1):
-    conn_name = conn
+@pytest.mark.parametrize("connect_and_uuid", setup(all_connectable, uuid_tables = "test_dataframe_to_sql"), indirect = True)
+def test_warning_case_insensitive_table_name(connect_and_uuid, request, test_frame1):
+    conn = connect_and_uuid["conn"]
+    table_uuid = connect_and_uuid["table_uuid"]
+    conn_name = connect_and_uuid["conn_name"]
+
     if conn_name == "sqlite_buildin" or "adbc" in conn_name:
         request.applymarker(pytest.mark.xfail(reason="Does not raise warning"))
 
-    conn = request.getfixturevalue(conn)
-    table_uuid = "table_"+create_uuid("table")
     table_uuid_upper = table_uuid.upper()
     # see gh-7815
     with tm.assert_produces_warning(
@@ -2893,27 +3039,28 @@ def test_warning_case_insensitive_table_name(conn, request, test_frame1):
 
     # Test that the warning is certainly NOT triggered in a normal case.
     with tm.assert_produces_warning(None):
-        case_sensitive_uuid = create_uuid("CaseSensitive")
+        case_sensitive_uuid = create_uuid()("CaseSensitive")
         test_frame1.to_sql(name=case_sensitive_uuid, con=conn)
 
 
-@pytest.mark.parametrize("conn", sqlalchemy_connectable)
-def test_sqlalchemy_type_mapping(conn, request):
-    conn = request.getfixturevalue(conn)
+@pytest.mark.parametrize("connect_and_uuid", setup(sqlalchemy_connectable, uuid_tables = "test_dataframe_to_sql"), indirect = True)
+def test_sqlalchemy_type_mapping(connect_and_uuid, request):
+    conn = connect_and_uuid["conn"]
+    table_uuid = connect_and_uuid["table_uuid"]
     from sqlalchemy import TIMESTAMP
 
     # Test Timestamp objects (no datetime64 because of timezone) (GH9085)
     df = DataFrame(
         {"time": to_datetime(["2014-12-12 01:54", "2014-12-11 02:54"], utc=True)}
     )
-    table_uuid = "table_"+create_uuid("test_type")
+
     with sql.SQLDatabase(conn) as db:
         table = sql.SQLTable(table_uuid, db, frame=df)
         # GH 9086: TIMESTAMP is the suggested type for datetimes with timezones
         assert isinstance(table.table.c["time"].type, TIMESTAMP)
 
 
-@pytest.mark.parametrize("conn", sqlalchemy_connectable)
+@pytest.mark.parametrize("connect_and_uuid", setup(sqlalchemy_connectable, uuid_tables = "test_dataframe_to_sql"), indirect = True)
 @pytest.mark.parametrize(
     "integer, expected",
     [
@@ -2934,11 +3081,12 @@ def test_sqlalchemy_type_mapping(conn, request):
         (int, "BIGINT" if np.dtype(int).name == "int64" else "INTEGER"),
     ],
 )
-def test_sqlalchemy_integer_mapping(conn, request, integer, expected):
+def test_sqlalchemy_integer_mapping(connect_and_uuid, request, integer, expected):
     # GH35076 Map pandas integer to optimal SQLAlchemy integer type
-    conn = request.getfixturevalue(conn)
+    conn = connect_and_uuid["conn"]
+    table_uuid = connect_and_uuid["table_uuid"]
+
     df = DataFrame([0, 1], columns=["a"], dtype=integer)
-    table_uuid = "table_"+create_uuid("test_type")
     with sql.SQLDatabase(conn) as db:
         table = sql.SQLTable(table_uuid, db, frame=df)
 
@@ -2946,13 +3094,13 @@ def test_sqlalchemy_integer_mapping(conn, request, integer, expected):
     assert result == expected
 
 
-@pytest.mark.parametrize("conn", sqlalchemy_connectable)
+@pytest.mark.parametrize("connect_and_uuid", setup(sqlalchemy_connectable, uuid_tables = "test_dataframe_to_sql"), indirect = True)
 @pytest.mark.parametrize("integer", ["uint64", "UInt64"])
-def test_sqlalchemy_integer_overload_mapping(conn, request, integer):
-    conn = request.getfixturevalue(conn)
+def test_sqlalchemy_integer_overload_mapping(connect_and_uuid, request, integer):
+    conn = connect_and_uuid["conn"]
+    table_uuid = connect_and_uuid["table_uuid"]
     # GH35076 Map pandas integer to optimal SQLAlchemy integer type
     df = DataFrame([0, 1], columns=["a"], dtype=integer)
-    table_uuid = "table_"+create_uuid("test_type")
     with sql.SQLDatabase(conn) as db:
         with pytest.raises(
             ValueError, match="Unsigned 64 bit integer datatype is not supported"
@@ -2960,17 +3108,17 @@ def test_sqlalchemy_integer_overload_mapping(conn, request, integer):
             sql.SQLTable(table_uuid, db, frame=df)
 
 
-@pytest.mark.parametrize("conn", all_connectable)
-def test_database_uri_string(conn, request, test_frame1):
+@pytest.mark.parametrize("connect_and_uuid", setup(all_connectable, uuid_tables = "test_dataframe_to_sql"), indirect = True)
+def test_database_uri_string(connect_and_uuid, request, test_frame1):
     pytest.importorskip("sqlalchemy")
-    conn = request.getfixturevalue(conn)
+    conn = connect_and_uuid["conn"]
+    table_uuid = connect_and_uuid["table_uuid"]
     # Test read_sql and .to_sql method with a database URI (GH10654)
     # db_uri = 'sqlite:///:memory:' # raises
     # sqlalchemy.exc.OperationalError: (sqlite3.OperationalError) near
     # "iris": syntax error [SQL: 'iris']
     with tm.ensure_clean() as name:
         db_uri = "sqlite:///" + name
-        table_uuid = "table_"+create_uuid("iris")
         test_frame1.to_sql(
             name=table_uuid, con=db_uri, if_exists="replace", index=False
         )
@@ -2984,14 +3132,14 @@ def test_database_uri_string(conn, request, test_frame1):
 
 
 @td.skip_if_installed("pg8000")
-@pytest.mark.parametrize("conn", all_connectable)
-def test_pg8000_sqlalchemy_passthrough_error(conn, request):
+@pytest.mark.parametrize("connect_and_uuid", setup(all_connectable, uuid_tables = "test_dataframe_to_sql"), indirect = True)
+def test_pg8000_sqlalchemy_passthrough_error(connect_and_uuid, request):
     pytest.importorskip("sqlalchemy")
-    conn = request.getfixturevalue(conn)
+    conn = connect_and_uuid["conn"]
+    table_uuid = connect_and_uuid["table_uuid"]
     # using driver that will not be installed on CI to trigger error
     # in sqlalchemy.create_engine -> test passing of this error to user
     db_uri = "postgresql+pg8000://user:pass@host/dbname"
-    table_uuid = "table_"+create_uuid("table")
     with pytest.raises(ImportError, match="pg8000"):
         sql.read_sql(f"select * from {table_uuid}", db_uri)
 
@@ -3032,15 +3180,16 @@ def test_query_by_select_obj(iris_connect_and_per_test_id, request):
     assert all_names == {"Iris-setosa"}
 
 
-@pytest.mark.parametrize("conn", all_connectable)
-def test_column_with_percentage(conn, request):
+@pytest.mark.parametrize("connect_and_uuid", setup(all_connectable, uuid_tables = "test_dataframe_to_sql"), indirect = True)
+def test_column_with_percentage(connect_and_uuid, request):
     # GH 37157
-    conn_name = conn
+    conn = connect_and_uuid["conn"]
+    table_uuid = connect_and_uuid["table_uuid"]
+    conn_name = connect_and_uuid["conn_name"]
+
     if conn_name == "sqlite_buildin":
         request.applymarker(pytest.mark.xfail(reason="Not Implemented"))
 
-    conn = request.getfixturevalue(conn)
-    table_uuid = "table_"+create_uuid("test_column_percentage")
     df = DataFrame({"A": [0, 1, 2], "%_variation": [3, 4, 5]})
     df.to_sql(name=table_uuid, con=conn, index=False)
 
@@ -3054,7 +3203,7 @@ def test_sql_open_close(test_frame3):
     # between the writing and reading (as in many real situations).
 
     with tm.ensure_clean() as name:
-        table_uuid = "table_"+create_uuid("test_frame3_legacy")
+        table_uuid = "table_"+create_uuid()("test_frame3_legacy")
         with closing(sqlite3.connect(name)) as conn:
             assert sql.to_sql(test_frame3, table_uuid, conn, index=False) == 4
 
@@ -3089,15 +3238,18 @@ def test_con_unknown_dbapi2_class_does_not_error_without_sql_alchemy_installed()
             sql.read_sql("SELECT 1", conn)
 
 
-def test_sqlite_read_sql_delegate(sqlite_buildin_iris):
-    conn = sqlite_buildin_iris
-    iris_frame1 = sql.read_sql_query("SELECT * FROM iris", conn)
-    iris_frame2 = sql.read_sql("SELECT * FROM iris", conn)
+@pytest.mark.parametrize("iris_connect_and_per_test_id", setup(['sqlite_buildin_iris']), indirect = True)
+def test_sqlite_read_sql_delegate(iris_connect_and_per_test_id):
+    conn = iris_connect_and_per_test_id['conn']
+    iris_uuid = iris_connect_and_per_test_id['iris_table_uuid']
+
+    iris_frame1 = sql.read_sql_query(f"SELECT * FROM {iris_uuid}", conn)
+    iris_frame2 = sql.read_sql(f"SELECT * FROM {iris_uuid}", conn)
     tm.assert_frame_equal(iris_frame1, iris_frame2)
 
-    msg = "Execution failed on sql 'iris': near \"iris\": syntax error"
+    msg = f"Execution failed on sql '{iris_uuid}': near \"{iris_uuid}\": syntax error"
     with pytest.raises(sql.DatabaseError, match=msg):
-        sql.read_sql("iris", conn)
+        sql.read_sql(iris_uuid, conn)
 
 
 def test_get_schema2(test_frame1):
@@ -3124,17 +3276,20 @@ def test_sqlite_type_mapping(sqlite_buildin):
 # -- Database flavor specific tests
 
 
-@pytest.mark.parametrize("conn", sqlalchemy_connectable)
-def test_create_table(conn, request):
-    if conn == "sqlite_str":
+@pytest.mark.parametrize("connect_and_uuid", setup(sqlalchemy_connectable, uuid_tables = "test_dataframe_to_sql"), indirect = True)
+def test_create_table(connect_and_uuid, request):
+    conn = connect_and_uuid["conn"]
+    table_uuid = connect_and_uuid["table_uuid"]
+    conn_name = connect_and_uuid["conn_name"]
+
+    if conn_name == "sqlite_str":
         pytest.skip("sqlite_str has no inspection system")
 
-    conn = request.getfixturevalue(conn)
 
     from sqlalchemy import inspect
 
     temp_frame = DataFrame({"one": [1.0, 2.0, 3.0, 4.0], "two": [4.0, 3.0, 2.0, 1.0]})
-    table_uuid = "table_"+create_uuid("temp_frame")
+
     with sql.SQLDatabase(conn, need_transaction=True) as pandasSQL:
         assert pandasSQL.to_sql(temp_frame, table_uuid) == 4
 
@@ -3145,18 +3300,19 @@ def test_create_table(conn, request):
     with sql.SQLDatabase(conn, need_transaction=True) as pandasSQL:
         pandasSQL.drop_table(table_uuid)
 
+@pytest.mark.parametrize("connect_and_uuid", setup(sqlalchemy_connectable, uuid_tables = "test_dataframe_to_sql"), indirect = True)
+def test_drop_table(connect_and_uuid, request):
+    conn = connect_and_uuid["conn"]
+    table_uuid = connect_and_uuid["table_uuid"]
+    conn_name = connect_and_uuid["conn_name"]
 
-@pytest.mark.parametrize("conn", sqlalchemy_connectable)
-def test_drop_table(conn, request):
-    if conn == "sqlite_str":
+    if conn_name == "sqlite_str":
         pytest.skip("sqlite_str has no inspection system")
 
-    conn = request.getfixturevalue(conn)
 
     from sqlalchemy import inspect
 
     temp_frame = DataFrame({"one": [1.0, 2.0, 3.0, 4.0], "two": [4.0, 3.0, 2.0, 1.0]})
-    table_uuid = "table_"+create_uuid("temp_frame")
     with sql.SQLDatabase(conn) as pandasSQL:
         with pandasSQL.run_transaction():
             assert pandasSQL.to_sql(temp_frame, table_uuid) == 4
@@ -3173,14 +3329,15 @@ def test_drop_table(conn, request):
         assert not insp.has_table(table_uuid)
 
 
-@pytest.mark.parametrize("conn", all_connectable)
-def test_roundtrip(conn, request, test_frame1):
-    if conn == "sqlite_str":
+@pytest.mark.parametrize("connect_and_uuid", setup(all_connectable, uuid_tables = "test_dataframe_to_sql"), indirect = True)
+def test_roundtrip(connect_and_uuid, request, test_frame1):
+    conn = connect_and_uuid["conn"]
+    table_uuid = connect_and_uuid["table_uuid"]
+    conn_name = connect_and_uuid["conn_name"]
+
+    if conn_name == "sqlite_str":
         pytest.skip("sqlite_str has no inspection system")
 
-    conn_name = conn
-    conn = request.getfixturevalue(conn)
-    table_uuid = "table_"+create_uuid("test_frame_roundtrip")
     pandasSQL = pandasSQL_builder(conn)
     with pandasSQL.run_transaction():
         assert pandasSQL.to_sql(test_frame1, table_uuid) == 4
@@ -3243,9 +3400,11 @@ def test_read_table_absent_raises(iris_connect_and_per_test_id, request):
         sql.read_sql_table("this_doesnt_exist", con=conn)
 
 
-@pytest.mark.parametrize("conn", sqlalchemy_connectable_types)
-def test_sqlalchemy_default_type_conversion(conn, request):
-    conn_name = conn
+@pytest.mark.parametrize("connect_and_uuid", setup(sqlalchemy_connectable_types, uuid_tables = "test_dataframe_to_sql"), indirect = True)
+def test_sqlalchemy_default_type_conversion(connect_and_uuid, request):
+    conn = connect_and_uuid["conn"]
+    table_uuid = connect_and_uuid["table_uuid"]
+    conn_name = connect_and_uuid["conn_name"]
     if conn_name == "sqlite_str":
         pytest.skip("types tables not created in sqlite_str fixture")
     elif "mysql" in conn_name or "sqlite" in conn_name:
@@ -3253,8 +3412,7 @@ def test_sqlalchemy_default_type_conversion(conn, request):
             pytest.mark.xfail(reason="boolean dtype not inferred properly")
         )
 
-    conn = request.getfixturevalue(conn)
-    df = sql.read_sql_table("types", conn)
+    df = sql.read_sql_table(table_uuid, conn)
 
     assert issubclass(df.FloatCol.dtype.type, np.floating)
     assert issubclass(df.IntCol.dtype.type, np.integer)
@@ -3266,11 +3424,11 @@ def test_sqlalchemy_default_type_conversion(conn, request):
     assert issubclass(df.BoolColWithNull.dtype.type, object)
 
 
-@pytest.mark.parametrize("conn", sqlalchemy_connectable)
-def test_bigint(conn, request):
+@pytest.mark.parametrize("connect_and_uuid", setup(sqlalchemy_connectable, uuid_tables = "test_dataframe_to_sql"), indirect = True)
+def test_bigint(connect_and_uuid, request):
     # int64 should be converted to BigInteger, GH7433
-    conn = request.getfixturevalue(conn)
-    table_uuid = "table_"+create_uuid("test_bigint")
+    conn = connect_and_uuid["conn"]
+    table_uuid = connect_and_uuid["table_uuid"]
     df = DataFrame(data={"i64": [2**62]})
     assert df.to_sql(name=table_uuid, con=conn, index=False) == 1
     result = sql.read_sql_table(table_uuid, conn)
@@ -3278,9 +3436,11 @@ def test_bigint(conn, request):
     tm.assert_frame_equal(df, result)
 
 
-@pytest.mark.parametrize("conn", sqlalchemy_connectable_types)
-def test_default_date_load(conn, request):
-    conn_name = conn
+@pytest.mark.parametrize("connect_and_uuid", setup(sqlalchemy_connectable_types, uuid_tables = "test_dataframe_to_sql"), indirect = True)
+def test_default_date_load(connect_and_uuid, request):
+    conn = connect_and_uuid["conn"]
+    table_uuid = connect_and_uuid["table_uuid"]
+    conn_name = connect_and_uuid["conn_name"]
     if conn_name == "sqlite_str":
         pytest.skip("types tables not created in sqlite_str fixture")
     elif "sqlite" in conn_name:
@@ -3288,20 +3448,19 @@ def test_default_date_load(conn, request):
             pytest.mark.xfail(reason="sqlite does not read date properly")
         )
 
-    conn = request.getfixturevalue(conn)
-    df = sql.read_sql_table("types", conn)
+    df = sql.read_sql_table(table_uuid, conn)
 
     assert issubclass(df.DateCol.dtype.type, np.datetime64)
 
 
-@pytest.mark.parametrize("conn", postgresql_connectable)
+@pytest.mark.parametrize("connect_and_uuid", setup(postgresql_connectable, uuid_tables = "test_dataframe_to_sql"), indirect = True)
 @pytest.mark.parametrize("parse_dates", [None, ["DateColWithTz"]])
-def test_datetime_with_timezone_query(conn, request, parse_dates):
+def test_datetime_with_timezone_query(connect_and_uuid, request, parse_dates):
     # edge case that converts postgresql datetime with time zone types
     # to datetime64[ns,psycopg2.tz.FixedOffsetTimezone..], which is ok
     # but should be more natural, so coerce to datetime64[ns] for now
-    conn = request.getfixturevalue(conn)
-    table_uuid = "table_"+create_uuid("datetz")
+    conn = connect_and_uuid["conn"]
+    table_uuid = connect_and_uuid["table_uuid"]
     expected = create_and_load_postgres_datetz(conn, table_uuid)
 
     # GH11216
@@ -3310,10 +3469,10 @@ def test_datetime_with_timezone_query(conn, request, parse_dates):
     tm.assert_series_equal(col, expected)
 
 
-@pytest.mark.parametrize("conn", postgresql_connectable)
-def test_datetime_with_timezone_query_chunksize(conn, request):
-    conn = request.getfixturevalue(conn)
-    table_uuid = "table_"+create_uuid("datetz")
+@pytest.mark.parametrize("connect_and_uuid", setup(postgresql_connectable, uuid_tables = "test_dataframe_to_sql"), indirect = True)
+def test_datetime_with_timezone_query_chunksize(connect_and_uuid, request):
+    conn = connect_and_uuid["conn"]
+    table_uuid = connect_and_uuid["table_uuid"]
     expected = create_and_load_postgres_datetz(conn, table_uuid)
 
     df = concat(
@@ -3324,10 +3483,10 @@ def test_datetime_with_timezone_query_chunksize(conn, request):
     tm.assert_series_equal(col, expected)
 
 
-@pytest.mark.parametrize("conn", postgresql_connectable)
-def test_datetime_with_timezone_table(conn, request):
-    conn = request.getfixturevalue(conn)
-    table_uuid = "table_"+create_uuid("datetz")
+@pytest.mark.parametrize("connect_and_uuid", setup(postgresql_connectable, uuid_tables = "test_dataframe_to_sql"), indirect = True)
+def test_datetime_with_timezone_table(connect_and_uuid, request):
+    conn = connect_and_uuid["conn"]
+    table_uuid = connect_and_uuid["table_uuid"]
     expected = create_and_load_postgres_datetz(conn, table_uuid)
     result = sql.read_sql_table(table_uuid, conn)
 
@@ -3335,11 +3494,11 @@ def test_datetime_with_timezone_table(conn, request):
     tm.assert_frame_equal(result, exp_frame)
 
 
-@pytest.mark.parametrize("conn", sqlalchemy_connectable)
-def test_datetime_with_timezone_roundtrip(conn, request):
-    conn_name = conn
-    conn = request.getfixturevalue(conn)
-    table_uuid = "table_"+create_uuid("test_datetime_tz")
+@pytest.mark.parametrize("connect_and_uuid", setup(sqlalchemy_connectable, uuid_tables = "test_dataframe_to_sql"), indirect = True)
+def test_datetime_with_timezone_roundtrip(connect_and_uuid, request):
+    conn = connect_and_uuid["conn"]
+    table_uuid = connect_and_uuid["table_uuid"]
+    conn_name = connect_and_uuid["conn_name"]
     # GH 9086
     # Write datetimetz data to a db and read it back
     # For dbs that support timestamps with timezones, should get back UTC
@@ -3367,11 +3526,11 @@ def test_datetime_with_timezone_roundtrip(conn, request):
     tm.assert_frame_equal(result, expected)
 
 
-@pytest.mark.parametrize("conn", sqlalchemy_connectable)
-def test_out_of_bounds_datetime(conn, request):
+@pytest.mark.parametrize("connect_and_uuid", setup(sqlalchemy_connectable, uuid_tables = "test_dataframe_to_sql"), indirect = True)
+def test_out_of_bounds_datetime(connect_and_uuid, request):
     # GH 26761
-    conn = request.getfixturevalue(conn)
-    table_uuid = "table_"+create_uuid("test_datetime_obb")
+    conn = connect_and_uuid["conn"]
+    table_uuid = connect_and_uuid["table_uuid"]
     data = DataFrame({"date": datetime(9999, 1, 1)}, index=[0])
     assert data.to_sql(name=table_uuid, con=conn, index=False) == 1
     result = sql.read_sql_table(table_uuid, conn)
@@ -3381,12 +3540,12 @@ def test_out_of_bounds_datetime(conn, request):
     tm.assert_frame_equal(result, expected)
 
 
-@pytest.mark.parametrize("conn", sqlalchemy_connectable)
-def test_naive_datetimeindex_roundtrip(conn, request):
+@pytest.mark.parametrize("connect_and_uuid", setup(sqlalchemy_connectable, uuid_tables = "test_dataframe_to_sql"), indirect = True)
+def test_naive_datetimeindex_roundtrip(connect_and_uuid, request):
     # GH 23510
     # Ensure that a naive DatetimeIndex isn't converted to UTC
-    conn = request.getfixturevalue(conn)
-    table_uuid = "table_"+create_uuid("foo_table")
+    conn = connect_and_uuid["conn"]
+    table_uuid = connect_and_uuid["table_uuid"]
     dates = date_range("2018-01-01", periods=5, freq="6h", unit="us")._with_freq(None)
     expected = DataFrame({"nums": range(5)}, index=dates)
     assert expected.to_sql(name=table_uuid, con=conn, index_label="info_date") == 5
@@ -3395,43 +3554,46 @@ def test_naive_datetimeindex_roundtrip(conn, request):
     tm.assert_frame_equal(result, expected, check_names=False)
 
 
-@pytest.mark.parametrize("conn", sqlalchemy_connectable_types)
-def test_date_parsing(conn, request):
+@pytest.mark.parametrize("connect_and_uuid", setup(sqlalchemy_connectable_types, uuid_tables = "test_dataframe_to_sql"), indirect = True)
+def test_date_parsing(connect_and_uuid, request):
     # No Parsing
-    conn_name = conn
-    conn = request.getfixturevalue(conn)
-    df = sql.read_sql_table("types", conn)
+    conn = connect_and_uuid["conn"]
+    table_uuid = connect_and_uuid["table_uuid"]
+    conn_name = connect_and_uuid["conn_name"]
+
+    df = sql.read_sql_table(table_uuid, conn)
     expected_type = object if "sqlite" in conn_name else np.datetime64
     assert issubclass(df.DateCol.dtype.type, expected_type)
 
-    df = sql.read_sql_table("types", conn, parse_dates=["DateCol"])
+    df = sql.read_sql_table(table_uuid, conn, parse_dates=["DateCol"])
     assert issubclass(df.DateCol.dtype.type, np.datetime64)
 
-    df = sql.read_sql_table("types", conn, parse_dates={"DateCol": "%Y-%m-%d %H:%M:%S"})
+    df = sql.read_sql_table(table_uuid, conn, parse_dates={"DateCol": "%Y-%m-%d %H:%M:%S"})
     assert issubclass(df.DateCol.dtype.type, np.datetime64)
 
     df = sql.read_sql_table(
-        "types",
+        table_uuid,
         conn,
         parse_dates={"DateCol": {"format": "%Y-%m-%d %H:%M:%S"}},
     )
     assert issubclass(df.DateCol.dtype.type, np.datetime64)
 
-    df = sql.read_sql_table("types", conn, parse_dates=["IntDateCol"])
+    df = sql.read_sql_table(table_uuid, conn, parse_dates=["IntDateCol"])
     assert issubclass(df.IntDateCol.dtype.type, np.datetime64)
 
-    df = sql.read_sql_table("types", conn, parse_dates={"IntDateCol": "s"})
+    df = sql.read_sql_table(table_uuid, conn, parse_dates={"IntDateCol": "s"})
     assert issubclass(df.IntDateCol.dtype.type, np.datetime64)
 
-    df = sql.read_sql_table("types", conn, parse_dates={"IntDateCol": {"unit": "s"}})
+    df = sql.read_sql_table(table_uuid, conn, parse_dates={"IntDateCol": {"unit": "s"}})
     assert issubclass(df.IntDateCol.dtype.type, np.datetime64)
 
 
-@pytest.mark.parametrize("conn", sqlalchemy_connectable)
-def test_datetime(conn, request):
-    conn_name = conn
-    conn = request.getfixturevalue(conn)
-    table_uuid = "table_"+create_uuid("test_datetime")
+@pytest.mark.parametrize("connect_and_uuid", setup(sqlalchemy_connectable, uuid_tables = "test_dataframe_to_sql"), indirect = True)
+def test_datetime(connect_and_uuid, request):
+    conn = connect_and_uuid["conn"]
+    table_uuid = connect_and_uuid["table_uuid"]
+    conn_name = connect_and_uuid["conn_name"]
+
     df = DataFrame(
         {"A": date_range("2013-01-01 09:00:00", periods=3), "B": np.arange(3.0)}
     )
@@ -3454,11 +3616,11 @@ def test_datetime(conn, request):
     tm.assert_frame_equal(result, expected)
 
 
-@pytest.mark.parametrize("conn", sqlalchemy_connectable)
-def test_datetime_NaT(conn, request):
-    conn_name = conn
-    conn = request.getfixturevalue(conn)
-    table_uuid = "table_"+create_uuid("test_datetime")
+@pytest.mark.parametrize("connect_and_uuid", setup(sqlalchemy_connectable, uuid_tables = "test_dataframe_to_sql"), indirect = True)
+def test_datetime_NaT(connect_and_uuid, request):
+    conn = connect_and_uuid["conn"]
+    table_uuid = connect_and_uuid["table_uuid"]
+    conn_name = connect_and_uuid["conn_name"]
     df = DataFrame(
         {"A": date_range("2013-01-01 09:00:00", periods=3), "B": np.arange(3.0)}
     )
@@ -3480,11 +3642,11 @@ def test_datetime_NaT(conn, request):
     tm.assert_frame_equal(result, expected)
 
 
-@pytest.mark.parametrize("conn", sqlalchemy_connectable)
-def test_datetime_date(conn, request):
+@pytest.mark.parametrize("connect_and_uuid", setup(sqlalchemy_connectable, uuid_tables = "test_dataframe_to_sql"), indirect = True)
+def test_datetime_date(connect_and_uuid, request):
     # test support for datetime.date
-    conn = request.getfixturevalue(conn)
-    table_uuid = "table_"+create_uuid("test_date")
+    conn = connect_and_uuid["conn"]
+    table_uuid = connect_and_uuid["table_uuid"]
     df = DataFrame([date(2014, 1, 1), date(2014, 1, 2)], columns=["a"])
     assert df.to_sql(name=table_uuid, con=conn, index=False) == 2
     res = read_sql_table(table_uuid, conn)
@@ -3494,14 +3656,15 @@ def test_datetime_date(conn, request):
     tm.assert_series_equal(result, expected)
 
 
-@pytest.mark.parametrize("conn", sqlalchemy_connectable)
-def test_datetime_time(conn, request, sqlite_buildin):
+@pytest.mark.parametrize("connect_and_uuid", setup(sqlalchemy_connectable, uuid_tables = "test_dataframe_to_sql"), indirect = True)
+def test_datetime_time(connect_and_uuid, request, sqlite_buildin):
     # test support for datetime.time
-    conn_name = conn
-    conn = request.getfixturevalue(conn)
-    table_uuid = create_uuid("test_time")
-    table_uuid2 = create_uuid("test_time2")
-    table_uuid3 = create_uuid("test_time3")
+    conn = connect_and_uuid["conn"]
+    table_uuid = connect_and_uuid["table_uuid"]
+    conn_name = connect_and_uuid["conn_name"]
+    table_uuid = 'a'+table_uuid
+    table_uuid2 = 'b'+table_uuid
+    table_uuid3 = 'c'+table_uuid
     df = DataFrame([time(9, 0, 0), time(9, 1, 30)], columns=["a"])
     assert df.to_sql(name=table_uuid, con=conn, index=False) == 2
     res = read_sql_table(table_uuid, conn)
@@ -3524,11 +3687,11 @@ def test_datetime_time(conn, request, sqlite_buildin):
     tm.assert_frame_equal(df, res)
 
 
-@pytest.mark.parametrize("conn", sqlalchemy_connectable)
-def test_mixed_dtype_insert(conn, request):
+@pytest.mark.parametrize("connect_and_uuid", setup(sqlalchemy_connectable, uuid_tables = "test_dataframe_to_sql"), indirect = True)
+def test_mixed_dtype_insert(connect_and_uuid, request):
     # see GH6509
-    conn = request.getfixturevalue(conn)
-    table_uuid = "table_"+create_uuid("test_read_write")
+    conn = connect_and_uuid["conn"]
+    table_uuid = connect_and_uuid["table_uuid"]
     s1 = Series(2**25 + 1, dtype=np.int32)
     s2 = Series(0.0, dtype=np.float32)
     df = DataFrame({"s1": s1, "s2": s2})
@@ -3540,11 +3703,11 @@ def test_mixed_dtype_insert(conn, request):
     tm.assert_frame_equal(df, df2, check_dtype=False, check_exact=True)
 
 
-@pytest.mark.parametrize("conn", sqlalchemy_connectable)
-def test_nan_numeric(conn, request):
+@pytest.mark.parametrize("connect_and_uuid", setup(sqlalchemy_connectable, uuid_tables = "test_dataframe_to_sql"), indirect = True)
+def test_nan_numeric(connect_and_uuid, request):
     # NaNs in numeric float column
-    conn = request.getfixturevalue(conn)
-    table_uuid = "table_"+create_uuid("test_nan")
+    conn = connect_and_uuid["conn"]
+    table_uuid = connect_and_uuid["table_uuid"]
     df = DataFrame({"A": [0, 1, 2], "B": [0.2, np.nan, 5.6]})
     assert df.to_sql(name=table_uuid, con=conn, index=False) == 3
 
@@ -3557,11 +3720,11 @@ def test_nan_numeric(conn, request):
     tm.assert_frame_equal(result, df)
 
 
-@pytest.mark.parametrize("conn", sqlalchemy_connectable)
-def test_nan_fullcolumn(conn, request):
+@pytest.mark.parametrize("connect_and_uuid", setup(sqlalchemy_connectable, uuid_tables = "test_dataframe_to_sql"), indirect = True)
+def test_nan_fullcolumn(connect_and_uuid, request):
     # full NaN column (numeric float column)
-    conn = request.getfixturevalue(conn)
-    table_uuid = "table_"+create_uuid("test_nan")
+    conn = connect_and_uuid["conn"]
+    table_uuid = connect_and_uuid["table_uuid"]
     df = DataFrame({"A": [0, 1, 2], "B": [np.nan, np.nan, np.nan]})
     assert df.to_sql(name=table_uuid, con=conn, index=False) == 3
 
@@ -3576,11 +3739,11 @@ def test_nan_fullcolumn(conn, request):
     tm.assert_frame_equal(result, df)
 
 
-@pytest.mark.parametrize("conn", sqlalchemy_connectable)
-def test_nan_string(conn, request):
+@pytest.mark.parametrize("connect_and_uuid", setup(sqlalchemy_connectable, uuid_tables = "test_dataframe_to_sql"), indirect = True)
+def test_nan_string(connect_and_uuid, request):
     # NaNs in string column
-    conn = request.getfixturevalue(conn)
-    table_uuid = "table_"+create_uuid("test_nan")
+    conn = connect_and_uuid["conn"]
+    table_uuid = connect_and_uuid["table_uuid"]
     df = DataFrame({"A": [0, 1, 2], "B": ["a", "b", np.nan]})
     assert df.to_sql(name=table_uuid, con=conn, index=False) == 3
 
@@ -3596,29 +3759,30 @@ def test_nan_string(conn, request):
     tm.assert_frame_equal(result, df)
 
 
-@pytest.mark.parametrize("conn", all_connectable)
-def test_to_sql_save_index(conn, request):
-    if "adbc" in conn:
+@pytest.mark.parametrize("connect_and_uuid", setup(all_connectable, uuid_tables = "test_dataframe_to_sql"), indirect = True)
+def test_to_sql_save_index(connect_and_uuid, request):
+    conn = connect_and_uuid["conn"]
+    table_uuid = connect_and_uuid["table_uuid"]
+    conn_name = connect_and_uuid["conn_name"]
+
+    if "adbc" in conn_name:
         request.node.add_marker(
             pytest.mark.xfail(
                 reason="ADBC implementation does not create index", strict=True
             )
         )
-    conn_name = conn
-    conn = request.getfixturevalue(conn)
     df = DataFrame.from_records(
         [(1, 2.1, "line1"), (2, 1.5, "line2")], columns=["A", "B", "C"], index=["A"]
     )
 
-    tbl_name = create_uuid("test_to_sql_saves_index")
     with pandasSQL_builder(conn) as pandasSQL:
         with pandasSQL.run_transaction():
-            assert pandasSQL.to_sql(df, tbl_name) == 2
+            assert pandasSQL.to_sql(df, table_uuid) == 2
 
     if conn_name in {"sqlite_buildin", "sqlite_str"}:
         ixs = sql.read_sql_query(
             "SELECT * FROM sqlite_master WHERE type = 'index' "
-            f"AND tbl_name = '{tbl_name}'",
+            f"AND tbl_name = '{table_uuid}'",
             conn,
         )
         ix_cols = []
@@ -3630,17 +3794,17 @@ def test_to_sql_save_index(conn, request):
 
         insp = inspect(conn)
 
-        ixs = insp.get_indexes(tbl_name)
+        ixs = insp.get_indexes(table_uuid)
         ix_cols = [i["column_names"] for i in ixs]
 
     assert ix_cols == [["A"]]
 
 
-@pytest.mark.parametrize("conn", all_connectable)
-def test_transactions(conn, request):
-    conn_name = conn
-    conn = request.getfixturevalue(conn)
-    table_uuid = "table_"+create_uuid("test_trans")
+@pytest.mark.parametrize("connect_and_uuid", setup(all_connectable, uuid_tables = "test_dataframe_to_sql"), indirect = True)
+def test_transactions(connect_and_uuid, request):
+    conn = connect_and_uuid["conn"]
+    table_uuid = connect_and_uuid["table_uuid"]
+    conn_name = connect_and_uuid["conn_name"]
 
     stmt = f"CREATE TABLE {table_uuid} (A INT, B TEXT)"
     if conn_name != "sqlite_buildin" and "adbc" not in conn_name:
@@ -3653,11 +3817,11 @@ def test_transactions(conn, request):
             trans.execute(stmt)
 
 
-@pytest.mark.parametrize("conn", all_connectable)
-def test_transaction_rollback(conn, request):
-    conn_name = conn
-    conn = request.getfixturevalue(conn)
-    table_uuid = "table_"+create_uuid("test_trans")
+@pytest.mark.parametrize("connect_and_uuid", setup(all_connectable, uuid_tables = "test_dataframe_to_sql"), indirect = True)
+def test_transaction_rollback(connect_and_uuid, request):
+    conn = connect_and_uuid["conn"]
+    table_uuid = connect_and_uuid["table_uuid"]
+    conn_name = connect_and_uuid["conn_name"]
 
     with pandasSQL_builder(conn) as pandasSQL:
         with pandasSQL.run_transaction() as trans:
@@ -3697,23 +3861,25 @@ def test_transaction_rollback(conn, request):
         assert len(res2) == 1
 
 
-@pytest.mark.parametrize("conn", sqlalchemy_connectable)
-def test_get_schema_create_table(conn, request, test_frame3):
+@pytest.mark.parametrize("connect_and_uuid", setup(sqlalchemy_connectable, uuid_tables = "test_dataframe_to_sql"), indirect = True)
+def test_get_schema_create_table(connect_and_uuid, request, test_frame3):
     # Use a dataframe without a bool column, since MySQL converts bool to
     # TINYINT (which read_sql_table returns as an int and causes a dtype
     # mismatch)
-    if conn == "sqlite_str":
+    conn = connect_and_uuid["conn"]
+    table_uuid = connect_and_uuid["table_uuid"]
+    conn_name = connect_and_uuid["conn_name"]
+
+    if conn_name == "sqlite_str":
         request.applymarker(
             pytest.mark.xfail(reason="test does not support sqlite_str fixture")
         )
 
-    conn = request.getfixturevalue(conn)
 
     from sqlalchemy import text
     from sqlalchemy.engine import Engine
 
-    tbl = create_uuid("test_get_schema_create_table")
-    create_sql = sql.get_schema(test_frame3, tbl, con=conn)
+    create_sql = sql.get_schema(test_frame3, table_uuid, con=conn)
     blank_test_df = test_frame3.iloc[:0]
 
     create_sql = text(create_sql)
@@ -3723,16 +3889,18 @@ def test_get_schema_create_table(conn, request, test_frame3):
                 newcon.execute(create_sql)
     else:
         conn.execute(create_sql)
-    returned_df = sql.read_sql_table(tbl, conn)
+    returned_df = sql.read_sql_table(table_uuid, conn)
     tm.assert_frame_equal(returned_df, blank_test_df, check_index_type=False)
 
 
-@pytest.mark.parametrize("conn", sqlalchemy_connectable)
-def test_dtype(conn, request):
-    if conn == "sqlite_str":
+@pytest.mark.parametrize("connect_and_uuid", setup(sqlalchemy_connectable, uuid_tables = "test_dataframe_to_sql"), indirect = True)
+def test_dtype(connect_and_uuid):
+    conn = connect_and_uuid["conn"]
+    table_uuid = connect_and_uuid["table_uuid"]
+    conn_name = connect_and_uuid["conn_name"]
+    if conn_name == "sqlite_str":
         pytest.skip("sqlite_str has no inspection system")
 
-    conn = request.getfixturevalue(conn)
 
     from sqlalchemy import (
         TEXT,
@@ -3744,11 +3912,11 @@ def test_dtype(conn, request):
     data = [(0.8, True), (0.9, None)]
     df = DataFrame(data, columns=cols)
 
-    table_uuid1 = create_uuid("dtype_test")
-    table_uuid2 = create_uuid("dtype_test2")
-    table_uuid3 = create_uuid("dtype_test3")
-    table_uuid_single = create_uuid("single_dtype_test")
-    error_table = create_uuid("error")
+    table_uuid1 = table_uuid
+    table_uuid2 = 'b'+table_uuid
+    table_uuid3 = 'c'+table_uuid
+    table_uuid_single = 's'+table_uuid
+    error_table = 'e'+table_uuid
 
     assert df.to_sql(name=table_uuid1, con=conn) == 2
     assert df.to_sql(name=table_uuid2, con=conn, dtype={"B": TEXT}) == 2
@@ -3774,15 +3942,24 @@ def test_dtype(conn, request):
     sqltypeb = meta.tables[table_uuid_single].columns["B"].type
     assert isinstance(sqltypea, TEXT)
     assert isinstance(sqltypeb, TEXT)
+    with open("test_dtype.txt", "a") as file:
+        file.write(conn_name)
+        file.write("\n")
+        file.write("\n")
+        file.write(repr(setup(sqlalchemy_connectable)))
+        file.write("\n")
+        file.write("\n")
 
 
-@pytest.mark.parametrize("conn", sqlalchemy_connectable)
-def test_notna_dtype(conn, request):
-    if conn == "sqlite_str":
+
+@pytest.mark.parametrize("connect_and_uuid", setup(sqlalchemy_connectable, uuid_tables = "test_dataframe_to_sql"), indirect = True)
+def test_notna_dtype(connect_and_uuid):
+    conn = connect_and_uuid["conn"]
+    table_uuid = connect_and_uuid["table_uuid"]
+    conn_name = connect_and_uuid["conn_name"]
+
+    if conn_name == "sqlite_str":
         pytest.skip("sqlite_str has no inspection system")
-
-    conn_name = conn
-    conn = request.getfixturevalue(conn)
 
     from sqlalchemy import (
         Boolean,
@@ -3800,25 +3977,35 @@ def test_notna_dtype(conn, request):
     }
     df = DataFrame(cols)
 
-    tbl = "table_"+create_uuid("notna_dtype_test")
-    assert df.to_sql(name=tbl, con=conn) == 2
-    _ = sql.read_sql_table(tbl, conn)
+    assert df.to_sql(name=table_uuid, con=conn) == 2
+    _ = sql.read_sql_table(table_uuid, conn)
     meta = MetaData()
     meta.reflect(bind=conn)
     my_type = Integer if "mysql" in conn_name else Boolean
-    col_dict = meta.tables[tbl].columns
+    col_dict = meta.tables[table_uuid].columns
     assert isinstance(col_dict["Bool"].type, my_type)
     assert isinstance(col_dict["Date"].type, DateTime)
     assert isinstance(col_dict["Int"].type, Integer)
     assert isinstance(col_dict["Float"].type, Float)
+    with open("test_notna_dtype.txt", "a") as file:
+        file.write(conn_name)
+        file.write("\n")
+        file.write("\n")
+        file.write(repr(setup(sqlalchemy_connectable)))
+        file.write("\n")
+        file.write("\n")
 
 
-@pytest.mark.parametrize("conn", sqlalchemy_connectable)
-def test_double_precision(conn, request):
-    if conn == "sqlite_str":
+
+@pytest.mark.parametrize("connect_and_uuid", setup(sqlalchemy_connectable, uuid_tables = "test_dataframe_to_sql"), indirect = True)
+def test_double_precision(connect_and_uuid):
+    conn = connect_and_uuid["conn"]
+    table_uuid = connect_and_uuid["table_uuid"]
+    conn_name = connect_and_uuid["conn_name"]
+
+    if conn_name == "sqlite_str":
         pytest.skip("sqlite_str has no inspection system")
 
-    conn = request.getfixturevalue(conn)
 
     from sqlalchemy import (
         BigInteger,
@@ -3839,7 +4026,6 @@ def test_double_precision(conn, request):
         }
     )
 
-    table_uuid = "table_"+create_uuid("test_dtypes")
     assert (
         df.to_sql(
             name=table_uuid,
@@ -3864,12 +4050,20 @@ def test_double_precision(conn, request):
     assert isinstance(col_dict["f64"].type, Float)
     assert isinstance(col_dict["i32"].type, Integer)
     assert isinstance(col_dict["i64"].type, BigInteger)
+    with open("test_double_precision.txt", "a") as file:
+        file.write(conn_name)
+        file.write("\n")
+        file.write("\n")
+        file.write(repr(setup(sqlalchemy_connectable)))
+        file.write("\n")
+        file.write("\n")
 
 
-@pytest.mark.parametrize("conn", sqlalchemy_connectable)
-def test_connectable_issue_example(conn, request):
-    conn = request.getfixturevalue(conn)
-    table_uuid = "table_"+create_uuid("test_foo_data")
+
+@pytest.mark.parametrize("connect_and_uuid", setup(sqlalchemy_connectable, uuid_tables = "test_dataframe_to_sql"), indirect = True)
+def test_connectable_issue_example(connect_and_uuid, request):
+    conn = connect_and_uuid["conn"]
+    table_uuid = connect_and_uuid["table_uuid"]
 
     # This tests the example raised in issue
     # https://github.com/pandas-dev/pandas/issues/10104
@@ -3902,17 +4096,20 @@ def test_connectable_issue_example(conn, request):
     main(conn)
 
 
-@pytest.mark.parametrize("conn", sqlalchemy_connectable)
+@pytest.mark.parametrize("connect_and_uuid", setup(sqlalchemy_connectable, uuid_tables = "test_dataframe_to_sql"), indirect = True)
 @pytest.mark.parametrize(
     "input",
     [{"foo": [np.inf]}, {"foo": [-np.inf]}, {"foo": [-np.inf], "infe0": ["bar"]}],
 )
-def test_to_sql_with_negative_npinf(conn, request, input):
+def test_to_sql_with_negative_npinf(connect_and_uuid, request, input):
     # GH 34431
 
     df = DataFrame(input)
-    conn_name = conn
-    conn = request.getfixturevalue(conn)
+    # conn = connect_and_uuid["conn"]
+    # conn_name = connect_and_uuid["conn_name"]
+    conn = connect_and_uuid["conn"]
+    table_uuid = connect_and_uuid["table_uuid"]
+    conn_name = connect_and_uuid["conn_name"]
 
     if "mysql" in conn_name:
         # GH 36465
@@ -3927,20 +4124,22 @@ def test_to_sql_with_negative_npinf(conn, request, input):
 
         msg = "inf cannot be used with MySQL"
         with pytest.raises(ValueError, match=msg):
-            df.to_sql(name="foobar", con=conn, index=False)
+            df.to_sql(name=table_uuid, con=conn, index=False)
     else:
-        assert df.to_sql(name="foobar", con=conn, index=False) == 1
-        res = sql.read_sql_table("foobar", conn)
+        assert df.to_sql(name=table_uuid, con=conn, index=False) == 1
+        res = sql.read_sql_table(table_uuid, conn)
         tm.assert_equal(df, res)
 
 
-@pytest.mark.parametrize("conn", sqlalchemy_connectable)
-def test_temporary_table(conn, request):
-    if conn == "sqlite_str":
+@pytest.mark.parametrize("connect_and_uuid", setup(sqlalchemy_connectable, uuid_tables = "test_dataframe_to_sql"), indirect = True)
+def test_temporary_table(connect_and_uuid, request):
+    conn = connect_and_uuid["conn"]
+    table_uuid = connect_and_uuid["table_uuid"]
+    conn_name = connect_and_uuid["conn_name"]
+
+    if conn_name == "sqlite_str":
         pytest.skip("test does not work with str connection")
 
-    conn = request.getfixturevalue(conn)
-    table_uuid = "table_"+create_uuid("temp_test")
 
     from sqlalchemy import (
         Column,
@@ -3973,29 +4172,31 @@ def test_temporary_table(conn, request):
     tm.assert_frame_equal(df, expected)
 
 
-@pytest.mark.parametrize("conn", all_connectable)
-def test_invalid_engine(conn, request, test_frame1):
-    if conn == "sqlite_buildin" or "adbc" in conn:
+@pytest.mark.parametrize("connect_and_uuid", setup(all_connectable, uuid_tables = "test_dataframe_to_sql"), indirect = True)
+def test_invalid_engine(connect_and_uuid, request, test_frame1):
+    conn = connect_and_uuid["conn"]
+    table_uuid = connect_and_uuid["table_uuid"]
+    conn_name = connect_and_uuid["conn_name"]
+
+    if conn_name == "sqlite_buildin" or "adbc" in conn_name:
         request.applymarker(
             pytest.mark.xfail(
                 reason="SQLiteDatabase/ADBCDatabase does not raise for bad engine"
             )
         )
 
-    conn = request.getfixturevalue(conn)
-    table_uuid = "table_"+create_uuid("test_frame1")
     msg = "engine must be one of 'auto', 'sqlalchemy'"
     with pandasSQL_builder(conn) as pandasSQL:
         with pytest.raises(ValueError, match=msg):
             pandasSQL.to_sql(test_frame1, table_uuid, engine="bad_engine")
 
 
-@pytest.mark.parametrize("conn", all_connectable)
-def test_to_sql_with_sql_engine(conn, request, test_frame1):
+@pytest.mark.parametrize("connect_and_uuid", setup(all_connectable, uuid_tables = "test_dataframe_to_sql"), indirect = True)
+def test_to_sql_with_sql_engine(connect_and_uuid, request, test_frame1):
     """`to_sql` with the `engine` param"""
     # mostly copied from this class's `_to_sql()` method
-    conn = request.getfixturevalue(conn)
-    table_uuid = "table_"+create_uuid("test_frame1")
+    conn = connect_and_uuid["conn"]
+    table_uuid = connect_and_uuid["table_uuid"]
     with pandasSQL_builder(conn) as pandasSQL:
         with pandasSQL.run_transaction():
             assert pandasSQL.to_sql(test_frame1, table_uuid, engine="auto") == 4
@@ -4006,11 +4207,11 @@ def test_to_sql_with_sql_engine(conn, request, test_frame1):
     assert num_rows == num_entries
 
 
-@pytest.mark.parametrize("conn", sqlalchemy_connectable)
-def test_options_sqlalchemy(conn, request, test_frame1):
+@pytest.mark.parametrize("connect_and_uuid", setup(sqlalchemy_connectable, uuid_tables = "test_dataframe_to_sql"), indirect = True)
+def test_options_sqlalchemy(connect_and_uuid, request, test_frame1):
     # use the set option
-    conn = request.getfixturevalue(conn)
-    table_uuid = "table_"+create_uuid("test_frame1")
+    conn = connect_and_uuid["conn"]
+    table_uuid = connect_and_uuid["table_uuid"]
     with pd.option_context("io.sql.engine", "sqlalchemy"):
         with pandasSQL_builder(conn) as pandasSQL:
             with pandasSQL.run_transaction():
@@ -4022,11 +4223,11 @@ def test_options_sqlalchemy(conn, request, test_frame1):
         assert num_rows == num_entries
 
 
-@pytest.mark.parametrize("conn", all_connectable)
-def test_options_auto(conn, request, test_frame1):
+@pytest.mark.parametrize("connect_and_uuid", setup(all_connectable, uuid_tables = "test_dataframe_to_sql"), indirect = True)
+def test_options_auto(connect_and_uuid, request, test_frame1):
     # use the set option
-    conn = request.getfixturevalue(conn)
-    table_uuid = "table_"+create_uuid("test_frame1")
+    conn = connect_and_uuid["conn"]
+    table_uuid = connect_and_uuid["table_uuid"]
     with pd.option_context("io.sql.engine", "auto"):
         with pandasSQL_builder(conn) as pandasSQL:
             with pandasSQL.run_transaction():
@@ -4058,10 +4259,10 @@ def test_get_engine_auto_error_message():
     # TODO(GH#36893) fill this in when we add more engines
 
 
-@pytest.mark.parametrize("conn", all_connectable)
+@pytest.mark.parametrize("connect_and_uuid", setup(all_connectable, uuid_tables = "test_dataframe_to_sql"), indirect = True)
 @pytest.mark.parametrize("func", ["read_sql", "read_sql_query"])
 def test_read_sql_dtype_backend(
-    conn,
+    connect_and_uuid,
     request,
     string_storage,
     func,
@@ -4070,15 +4271,15 @@ def test_read_sql_dtype_backend(
     dtype_backend_expected,
 ):
     # GH#50048
-    conn_name = conn
-    conn = request.getfixturevalue(conn)
-    table = "table_"+create_uuid("test")
+    conn = connect_and_uuid["conn"]
+    table_uuid = connect_and_uuid["table_uuid"]
+    conn_name = connect_and_uuid["conn_name"]
     df = dtype_backend_data
-    df.to_sql(name=table, con=conn, index=False, if_exists="replace")
+    df.to_sql(name=table_uuid, con=conn, index=False, if_exists="replace")
 
     with pd.option_context("mode.string_storage", string_storage):
         result = getattr(pd, func)(
-            f"Select * from {table}", conn, dtype_backend=dtype_backend
+            f"Select * from {table_uuid}", conn, dtype_backend=dtype_backend
         )
         expected = dtype_backend_expected(string_storage, dtype_backend, conn_name)
 
@@ -4092,7 +4293,7 @@ def test_read_sql_dtype_backend(
 
     with pd.option_context("mode.string_storage", string_storage):
         iterator = getattr(pd, func)(
-            f"Select * from {table}",
+            f"Select * from {table_uuid}",
             con=conn,
             dtype_backend=dtype_backend,
             chunksize=3,
@@ -4102,10 +4303,10 @@ def test_read_sql_dtype_backend(
             tm.assert_frame_equal(result, expected)
 
 
-@pytest.mark.parametrize("conn", all_connectable)
+@pytest.mark.parametrize("connect_and_uuid", setup(all_connectable, uuid_tables = "test_dataframe_to_sql"), indirect = True)
 @pytest.mark.parametrize("func", ["read_sql", "read_sql_table"])
 def test_read_sql_dtype_backend_table(
-    conn,
+    connect_and_uuid,
     request,
     string_storage,
     func,
@@ -4113,7 +4314,11 @@ def test_read_sql_dtype_backend_table(
     dtype_backend_data,
     dtype_backend_expected,
 ):
-    if "sqlite" in conn and "adbc" not in conn:
+    conn = connect_and_uuid["conn"]
+    table_uuid = connect_and_uuid["table_uuid"]
+    conn_name = connect_and_uuid["conn_name"]
+
+    if "sqlite" in conn_name and "adbc" not in conn_name:
         request.applymarker(
             pytest.mark.xfail(
                 reason=(
@@ -4123,14 +4328,11 @@ def test_read_sql_dtype_backend_table(
             )
         )
     # GH#50048
-    conn_name = conn
-    conn = request.getfixturevalue(conn)
-    table = "table_"+create_uuid("test")
     df = dtype_backend_data
-    df.to_sql(name=table, con=conn, index=False, if_exists="replace")
+    df.to_sql(name=table_uuid, con=conn, index=False, if_exists="replace")
 
     with pd.option_context("mode.string_storage", string_storage):
-        result = getattr(pd, func)(table, conn, dtype_backend=dtype_backend)
+        result = getattr(pd, func)(table_uuid, conn, dtype_backend=dtype_backend)
         expected = dtype_backend_expected(string_storage, dtype_backend, conn_name)
     tm.assert_frame_equal(result, expected)
 
@@ -4140,7 +4342,7 @@ def test_read_sql_dtype_backend_table(
 
     with pd.option_context("mode.string_storage", string_storage):
         iterator = getattr(pd, func)(
-            table,
+            table_uuid,
             conn,
             dtype_backend=dtype_backend,
             chunksize=3,
@@ -4150,20 +4352,20 @@ def test_read_sql_dtype_backend_table(
             tm.assert_frame_equal(result, expected)
 
 
-@pytest.mark.parametrize("conn", all_connectable)
+@pytest.mark.parametrize("connect_and_uuid", setup(all_connectable, uuid_tables = "test_dataframe_to_sql"), indirect = True)
 @pytest.mark.parametrize("func", ["read_sql", "read_sql_table", "read_sql_query"])
-def test_read_sql_invalid_dtype_backend_table(conn, request, func, dtype_backend_data):
-    conn = request.getfixturevalue(conn)
-    table = "table_"+create_uuid("test")
+def test_read_sql_invalid_dtype_backend_table(connect_and_uuid, request, func, dtype_backend_data):
+    conn = connect_and_uuid["conn"]
+    table_uuid = connect_and_uuid["table_uuid"]
     df = dtype_backend_data
-    df.to_sql(name=table, con=conn, index=False, if_exists="replace")
+    df.to_sql(name=table_uuid, con=conn, index=False, if_exists="replace")
 
     msg = (
         "dtype_backend numpy is invalid, only 'numpy_nullable' and "
         "'pyarrow' are allowed."
     )
     with pytest.raises(ValueError, match=msg):
-        getattr(pd, func)(table, conn, dtype_backend="numpy")
+        getattr(pd, func)(table_uuid, conn, dtype_backend="numpy")
 
 
 @pytest.fixture
@@ -4227,15 +4429,18 @@ def dtype_backend_expected():
     return func
 
 
-@pytest.mark.parametrize("conn", all_connectable)
-def test_chunksize_empty_dtypes(conn, request):
+@pytest.mark.parametrize("connect_and_uuid", setup(all_connectable, uuid_tables = "test_dataframe_to_sql"), indirect = True)
+def test_chunksize_empty_dtypes(connect_and_uuid, request):
     # GH#50245
-    if "adbc" in conn:
+    conn = connect_and_uuid["conn"]
+    table_uuid = connect_and_uuid["table_uuid"]
+    conn_name = connect_and_uuid["conn_name"]
+
+    if "adbc" in conn_name:
         request.node.add_marker(
             pytest.mark.xfail(reason="chunksize argument NotImplemented with ADBC")
         )
-    conn = request.getfixturevalue(conn)
-    table_uuid = "table_"+create_uuid("test")
+
     dtypes = {"a": "int64", "b": "object"}
     df = DataFrame(columns=["a", "b"]).astype(dtypes)
     expected = df.copy()
@@ -4250,18 +4455,18 @@ def test_chunksize_empty_dtypes(conn, request):
         tm.assert_frame_equal(result, expected)
 
 
-@pytest.mark.parametrize("conn", all_connectable)
+@pytest.mark.parametrize("connect_and_uuid", setup(all_connectable, uuid_tables = "test_dataframe_to_sql"), indirect = True)
 @pytest.mark.parametrize("dtype_backend", [lib.no_default, "numpy_nullable"])
 @pytest.mark.parametrize("func", ["read_sql", "read_sql_query"])
-def test_read_sql_dtype(conn, request, func, dtype_backend):
+def test_read_sql_dtype(connect_and_uuid, request, func, dtype_backend):
     # GH#50797
-    conn = request.getfixturevalue(conn)
-    table = "table_"+create_uuid("test")
+    conn = connect_and_uuid["conn"]
+    table_uuid = connect_and_uuid["table_uuid"]
     df = DataFrame({"a": [1, 2, 3], "b": 5})
-    df.to_sql(name=table, con=conn, index=False, if_exists="replace")
+    df.to_sql(name=table_uuid, con=conn, index=False, if_exists="replace")
 
     result = getattr(pd, func)(
-        f"Select * from {table}",
+        f"Select * from {table_uuid}",
         conn,
         dtype={"a": np.float64},
         dtype_backend=dtype_backend,
@@ -4278,9 +4483,10 @@ def test_read_sql_dtype(conn, request, func, dtype_backend):
     tm.assert_frame_equal(result, expected)
 
 
-def test_bigint_warning(sqlite_engine):
-    conn = sqlite_engine
-    table_uuid = "table_"+create_uuid("test_bigintwarning")
+@pytest.mark.parametrize("connect_and_uuid", setup(['sqlite_engine'], uuid_tables = "test_dataframe_to_sql_empty"), indirect = True)
+def test_bigint_warning(connect_and_uuid):
+    conn = connect_and_uuid["conn"]
+    table_uuid = connect_and_uuid["table_uuid"]
     # test no warning for BIGINT (to support int64) is raised (GH7433)
     df = DataFrame({"a": [1, 2]}, dtype="int64")
     assert df.to_sql(name=table_uuid, con=conn, index=False) == 2
@@ -4289,16 +4495,18 @@ def test_bigint_warning(sqlite_engine):
         sql.read_sql_table(table_uuid, conn)
 
 
-def test_valueerror_exception(sqlite_engine):
-    conn = sqlite_engine
+@pytest.mark.parametrize("connect_and_uuid", setup(['sqlite_engine'], uuid_tables = "test_dataframe_to_sql_empty"), indirect = True)
+def test_valueerror_exception(connect_and_uuid):
+    conn = connect_and_uuid["conn"]
     df = DataFrame({"col1": [1, 2], "col2": [3, 4]})
     with pytest.raises(ValueError, match="Empty table name specified"):
         df.to_sql(name="", con=conn, if_exists="replace", index=False)
 
 
-def test_row_object_is_named_tuple(sqlite_engine):
-    conn = sqlite_engine
-    table_uuid = "table_"+create_uuid("test_frame")
+@pytest.mark.parametrize("connect_and_uuid", setup(['sqlite_engine'], uuid_tables = "test_dataframe_to_sql_empty"), indirect = True)
+def test_row_object_is_named_tuple(connect_and_uuid):
+    conn = connect_and_uuid["conn"]
+    table_uuid = connect_and_uuid["table_uuid"]
     # GH 40682
     # Test for the is_named_tuple() function
     # Placed here due to its usage of sqlalchemy
@@ -4335,15 +4543,16 @@ def test_row_object_is_named_tuple(sqlite_engine):
     assert list(df.columns) == ["id", "string_column"]
 
 
-def test_read_sql_string_inference(sqlite_engine):
-    conn = sqlite_engine
+@pytest.mark.parametrize("connect_and_uuid", setup(['sqlite_engine'], uuid_tables = "test_dataframe_to_sql_empty"), indirect = True)
+def test_read_sql_string_inference(connect_and_uuid):
+    conn = connect_and_uuid["conn"]
+    table_uuid = connect_and_uuid["table_uuid"]
     # GH#54430
-    table = "table_"+create_uuid("test")
     df = DataFrame({"a": ["x", "y"]})
-    df.to_sql(table, con=conn, index=False, if_exists="replace")
+    df.to_sql(table_uuid, con=conn, index=False, if_exists="replace")
 
     with pd.option_context("future.infer_string", True):
-        result = read_sql_table(table, conn)
+        result = read_sql_table(table_uuid, conn)
 
     dtype = pd.StringDtype(na_value=np.nan)
     expected = DataFrame(
@@ -4353,9 +4562,10 @@ def test_read_sql_string_inference(sqlite_engine):
     tm.assert_frame_equal(result, expected)
 
 
-def test_roundtripping_datetimes(sqlite_engine):
-    conn = sqlite_engine
-    table_uuid = "table_"+create_uuid("test")
+@pytest.mark.parametrize("connect_and_uuid", setup(['sqlite_engine'], uuid_tables = "test_dataframe_to_sql_empty"), indirect = True)
+def test_roundtripping_datetimes(connect_and_uuid):
+    conn = connect_and_uuid["conn"]
+    table_uuid = connect_and_uuid["table_uuid"]
     # GH#54877
     df = DataFrame({"t": [datetime(2020, 12, 31, 12)]}, dtype="datetime64[ns]")
     df.to_sql(table_uuid, conn, if_exists="replace", index=False)
@@ -4372,20 +4582,22 @@ def sqlite_builtin_detect_types():
             yield conn
 
 
-def test_roundtripping_datetimes_detect_types(sqlite_builtin_detect_types):
+@pytest.mark.parametrize("connect_and_uuid", setup(['sqlite_builtin_detect_types'], uuid_tables = "test_dataframe_to_sql_empty"), indirect = True)
+def test_roundtripping_datetimes_detect_types(connect_and_uuid):
     # https://github.com/pandas-dev/pandas/issues/55554
-    conn = sqlite_builtin_detect_types
-    table_uuid = "table_"+create_uuid("test")
+    conn = connect_and_uuid["conn"]
+    table_uuid = connect_and_uuid["table_uuid"]
     df = DataFrame({"t": [datetime(2020, 12, 31, 12)]}, dtype="datetime64[ns]")
     df.to_sql(table_uuid, conn, if_exists="replace", index=False)
     result = pd.read_sql(f"select * from {table_uuid}", conn).iloc[0, 0]
     assert result == Timestamp("2020-12-31 12:00:00.000000")
 
 
+@pytest.mark.parametrize("connect_and_uuid", setup(['postgresql_psycopg2_engine'], uuid_tables = "test_dataframe_to_sql_empty"), indirect = True)
 @pytest.mark.db
-def test_psycopg2_schema_support(postgresql_psycopg2_engine):
-    conn = postgresql_psycopg2_engine
-
+def test_psycopg2_schema_support(connect_and_uuid):
+    conn = connect_and_uuid["conn"]
+    table_uuid = connect_and_uuid["table_uuid"]
     # only test this for postgresql (schema's not supported in
     # mysql/sqlite)
     df = DataFrame({"col1": [1, 2], "col2": [0.1, 0.2], "col3": ["a", "n"]})
@@ -4396,11 +4608,9 @@ def test_psycopg2_schema_support(postgresql_psycopg2_engine):
             con.exec_driver_sql("DROP SCHEMA IF EXISTS other CASCADE;")
             con.exec_driver_sql("CREATE SCHEMA other;")
 
-    schema_public_uuid = create_uuid("test_schema_public")
-    schema_public_explicit_uuid = create_uuid(
-        "test_schema_public_explicit"
-    )
-    schema_other_uuid = create_uuid("test_schema_other")
+    schema_public_uuid = 'a'+table_uuid
+    schema_public_explicit_uuid = 'b'+table_uuid
+    schema_other_uuid = 'c'+table_uuid
 
     # write dataframe to different schema's
     assert df.to_sql(name=schema_public_uuid, con=conn, index=False) == 2
@@ -4459,23 +4669,23 @@ def test_psycopg2_schema_support(postgresql_psycopg2_engine):
     tm.assert_frame_equal(concat([df, df], ignore_index=True), res)
 
 
+@pytest.mark.parametrize("connect_and_uuid", setup(['postgresql_psycopg2_engine'], uuid_tables = "test_dataframe_to_sql_empty"), indirect = True)
 @pytest.mark.db
-def test_self_join_date_columns(postgresql_psycopg2_engine):
+def test_self_join_date_columns(connect_and_uuid):
     # GH 44421
-    conn = postgresql_psycopg2_engine
+    conn = connect_and_uuid["conn"]
+    table_uuid = connect_and_uuid["table_uuid"]
     from sqlalchemy.sql import text
-
-    tb = "table_"+create_uuid("person")
 
     create_table = text(
         f"""
-    CREATE TABLE {tb}
+    CREATE TABLE {table_uuid}
     (
-        id serial constraint {tb}_pkey primary key,
+        id serial constraint {table_uuid}_pkey primary key,
         created_dt timestamp with time zone
     );
 
-    INSERT INTO {tb}
+    INSERT INTO {table_uuid}
         VALUES (1, '2021-01-01T00:00:00Z');
     """
     )
@@ -4483,7 +4693,7 @@ def test_self_join_date_columns(postgresql_psycopg2_engine):
         with con.begin():
             con.execute(create_table)
 
-    sql_query = f'SELECT * FROM "{tb}" AS p1 INNER JOIN "{tb}" AS p2 ON p1.id = p2.id;'
+    sql_query = f'SELECT * FROM "{table_uuid}" AS p1 INNER JOIN "{table_uuid}" AS p2 ON p1.id = p2.id;'
     result = pd.read_sql(sql_query, conn)
     expected = DataFrame(
         [[1, Timestamp("2021", tz="UTC")] * 2], columns=["id", "created_dt"] * 2
@@ -4493,12 +4703,13 @@ def test_self_join_date_columns(postgresql_psycopg2_engine):
 
     # Cleanup
     with sql.SQLDatabase(conn, need_transaction=True) as pandasSQL:
-        pandasSQL.drop_table(tb)
+        pandasSQL.drop_table(table_uuid)
 
 
-def test_create_and_drop_table(sqlite_engine):
-    conn = sqlite_engine
-    table_uuid = "table_"+create_uuid("drop_test_frame")
+@pytest.mark.parametrize("connect_and_uuid", setup(['sqlite_engine'], uuid_tables = "test_dataframe_to_sql_empty"), indirect = True)
+def test_create_and_drop_table(connect_and_uuid):
+    conn = connect_and_uuid["conn"]
+    table_uuid = connect_and_uuid["table_uuid"]
     temp_frame = DataFrame({"one": [1.0, 2.0, 3.0, 4.0], "two": [4.0, 3.0, 2.0, 1.0]})
     with sql.SQLDatabase(conn) as pandasSQL:
         with pandasSQL.run_transaction():
@@ -4512,9 +4723,10 @@ def test_create_and_drop_table(sqlite_engine):
         assert not pandasSQL.has_table(table_uuid)
 
 
-def test_sqlite_datetime_date(sqlite_buildin):
-    conn = sqlite_buildin
-    table_uuid = "table_"+create_uuid("test_date")
+@pytest.mark.parametrize("connect_and_uuid", setup(['sqlite_buildin'], uuid_tables = "test_dataframe_to_sql_empty"), indirect = True)
+def test_sqlite_datetime_date(connect_and_uuid):
+    conn = connect_and_uuid["conn"]
+    table_uuid = connect_and_uuid["table_uuid"]
     df = DataFrame([date(2014, 1, 1), date(2014, 1, 2)], columns=["a"])
     assert df.to_sql(name=table_uuid, con=conn, index=False) == 2
     res = read_sql_query(f"SELECT * FROM {table_uuid}", conn)
@@ -4522,10 +4734,11 @@ def test_sqlite_datetime_date(sqlite_buildin):
     tm.assert_frame_equal(res, df.astype(str))
 
 
+@pytest.mark.parametrize("connect_and_uuid", setup(['sqlite_buildin'], uuid_tables = "test_dataframe_to_sql_empty"), indirect = True)
 @pytest.mark.parametrize("tz_aware", [False, True])
-def test_sqlite_datetime_time(tz_aware, sqlite_buildin):
-    conn = sqlite_buildin
-    table_uuid = "table_"+create_uuid("test_time")
+def test_sqlite_datetime_time(tz_aware, connect_and_uuid):
+    conn = connect_and_uuid["conn"]
+    table_uuid = connect_and_uuid["table_uuid"]
     # test support for datetime.time, GH #8341
     if not tz_aware:
         tz_times = [time(9, 0, 0), time(9, 1, 30)]
@@ -4550,20 +4763,21 @@ def get_sqlite_column_type(conn, table, column):
     raise ValueError(f"Table {table}, column {column} not found")
 
 
-def test_sqlite_test_dtype(sqlite_buildin):
-    conn = sqlite_buildin
-    table_uuid = create_uuid("dtype_test")
-    table_uuid2 = create_uuid("dtype_test2")
-    table_error = create_uuid("error")
-    table_single = create_uuid("single_dtype_test")
+@pytest.mark.parametrize("connect_and_uuid", setup(['sqlite_buildin'], uuid_tables = "test_dataframe_to_sql_empty"), indirect = True)
+def test_sqlite_test_dtype(connect_and_uuid):
+    conn = connect_and_uuid["conn"]
+    table_uuid1 = 'a'+connect_and_uuid["table_uuid"]
+    table_uuid2 = 'b'+connect_and_uuid["table_uuid"]
+    table_error = create_uuid()("error")
+    table_single = create_uuid()("single_dtype_test")
     cols = ["A", "B"]
     data = [(0.8, True), (0.9, None)]
     df = DataFrame(data, columns=cols)
-    assert df.to_sql(name=table_uuid, con=conn) == 2
+    assert df.to_sql(name=table_uuid1, con=conn) == 2
     assert df.to_sql(name=table_uuid2, con=conn, dtype={"B": "STRING"}) == 2
 
     # sqlite stores Boolean values as INTEGER
-    assert get_sqlite_column_type(conn, table_uuid, "B") == "INTEGER"
+    assert get_sqlite_column_type(conn, table_uuid1, "B") == "INTEGER"
 
     assert get_sqlite_column_type(conn, table_uuid2, "B") == "STRING"
     msg = r"B \(<class 'bool'>\) not a string"
@@ -4576,8 +4790,10 @@ def test_sqlite_test_dtype(sqlite_buildin):
     assert get_sqlite_column_type(conn, table_single, "B") == "STRING"
 
 
-def test_sqlite_notna_dtype(sqlite_buildin):
-    conn = sqlite_buildin
+@pytest.mark.parametrize("connect_and_uuid", setup(['sqlite_buildin'], uuid_tables = "test_dataframe_to_sql_empty"), indirect = True)
+def test_sqlite_notna_dtype(connect_and_uuid):
+    conn = connect_and_uuid["conn"]
+    table_uuid = connect_and_uuid["table_uuid"]
     cols = {
         "Bool": Series([True, None]),
         "Date": Series([datetime(2012, 5, 1), None]),
@@ -4586,18 +4802,18 @@ def test_sqlite_notna_dtype(sqlite_buildin):
     }
     df = DataFrame(cols)
 
-    tbl = "table_"+create_uuid("notna_dtype_test")
-    assert df.to_sql(name=tbl, con=conn) == 2
+    assert df.to_sql(name=table_uuid, con=conn) == 2
 
-    assert get_sqlite_column_type(conn, tbl, "Bool") == "INTEGER"
-    assert get_sqlite_column_type(conn, tbl, "Date") == "TIMESTAMP"
-    assert get_sqlite_column_type(conn, tbl, "Int") == "INTEGER"
-    assert get_sqlite_column_type(conn, tbl, "Float") == "REAL"
+    assert get_sqlite_column_type(conn, table_uuid, "Bool") == "INTEGER"
+    assert get_sqlite_column_type(conn, table_uuid, "Date") == "TIMESTAMP"
+    assert get_sqlite_column_type(conn, table_uuid, "Int") == "INTEGER"
+    assert get_sqlite_column_type(conn, table_uuid, "Float") == "REAL"
 
 
-def test_sqlite_illegal_names(sqlite_buildin):
+@pytest.mark.parametrize("connect_and_uuid", setup(['sqlite_buildin'], uuid_tables = "test_dataframe_to_sql_empty"), indirect = True)
+def test_sqlite_illegal_names(connect_and_uuid):
     # For sqlite, these should work fine
-    conn = sqlite_buildin
+    conn = connect_and_uuid["conn"]
     df = DataFrame([[1, 2], [3, 4]], columns=["a", "b"])
 
     msg = "Empty table or column name specified"
@@ -4657,16 +4873,19 @@ def tquery(query, con=None):
     return None if res is None else list(res)
 
 
-def test_xsqlite_basic(sqlite_buildin):
+@pytest.mark.parametrize("connect_and_uuid", setup(['sqlite_buildin'], uuid_tables = "test_dataframe_to_sql_empty"), indirect = True)
+def test_xsqlite_basic(connect_and_uuid):
+    conn = connect_and_uuid["conn"]
+    table_uuid1 = 'a'+connect_and_uuid["table_uuid"]
+    table_uuid2 = 'b'+connect_and_uuid["table_uuid"]
+
     frame = DataFrame(
         np.random.default_rng(2).standard_normal((10, 4)),
         columns=Index(list("ABCD")),
         index=date_range("2000-01-01", periods=10, freq="B"),
     )
-    table_uuid = "table_"+create_uuid("test_table")
-    table_uuid2 = "table_"+create_uuid("test_table2")
-    assert sql.to_sql(frame, name=table_uuid, con=sqlite_buildin, index=False) == 10
-    result = sql.read_sql(f"select * from {table_uuid}", sqlite_buildin)
+    assert sql.to_sql(frame, name=table_uuid1, con=conn, index=False) == 10
+    result = sql.read_sql(f"select * from {table_uuid1}", conn)
 
     # HACK! Change this once indexes are handled properly.
     result.index = frame.index
@@ -4678,9 +4897,9 @@ def test_xsqlite_basic(sqlite_buildin):
     frame2 = frame.copy()
     new_idx = Index(np.arange(len(frame2)), dtype=np.int64) + 10
     frame2["Idx"] = new_idx.copy()
-    assert sql.to_sql(frame2, name=table_uuid2, con=sqlite_buildin, index=False) == 10
+    assert sql.to_sql(frame2, name=table_uuid2, con=conn, index=False) == 10
     result = sql.read_sql(
-        f"select * from {table_uuid2}", sqlite_buildin, index_col="Idx"
+        f"select * from {table_uuid2}", conn, index_col="Idx"
     )
     expected = frame.copy()
     expected.index = new_idx
@@ -4688,59 +4907,67 @@ def test_xsqlite_basic(sqlite_buildin):
     tm.assert_frame_equal(expected, result)
 
 
-def test_xsqlite_write_row_by_row(sqlite_buildin):
+@pytest.mark.parametrize("connect_and_uuid", setup(['sqlite_buildin'], uuid_tables = "test_dataframe_to_sql_empty"), indirect = True)
+def test_xsqlite_write_row_by_row(connect_and_uuid):
     frame = DataFrame(
         np.random.default_rng(2).standard_normal((10, 4)),
         columns=Index(list("ABCD")),
         index=date_range("2000-01-01", periods=10, freq="B"),
     )
-    table_uuid = "table_"+create_uuid("test")
+    conn = connect_and_uuid["conn"]
+    table_uuid = connect_and_uuid["table_uuid"]
     frame.iloc[0, 0] = np.nan
     create_sql = sql.get_schema(frame, table_uuid)
-    cur = sqlite_buildin.cursor()
+    cur = conn.cursor()
     cur.execute(create_sql)
 
     ins = f"INSERT INTO {table_uuid} VALUES (%s, %s, %s, %s)"
     for _, row in frame.iterrows():
         fmt_sql = format_query(ins, *row)
-        tquery(fmt_sql, con=sqlite_buildin)
+        tquery(fmt_sql, con=conn)
 
-    sqlite_buildin.commit()
+    conn.commit()
 
-    result = sql.read_sql(f"select * from {table_uuid}", con=sqlite_buildin)
+    result = sql.read_sql(f"select * from {table_uuid}", con=conn)
     result.index = frame.index
     tm.assert_frame_equal(result, frame, rtol=1e-3)
 
 
-def test_xsqlite_execute(sqlite_buildin):
+@pytest.mark.parametrize("connect_and_uuid", setup(['sqlite_buildin'], uuid_tables = "test_dataframe_to_sql_empty"), indirect = True)
+def test_xsqlite_execute(connect_and_uuid):
+    conn = connect_and_uuid["conn"]
+    table_uuid = connect_and_uuid["table_uuid"]
+
     frame = DataFrame(
         np.random.default_rng(2).standard_normal((10, 4)),
         columns=Index(list("ABCD")),
         index=date_range("2000-01-01", periods=10, freq="B"),
     )
-    table_uuid = "table_"+create_uuid("test")
     create_sql = sql.get_schema(frame, table_uuid)
-    cur = sqlite_buildin.cursor()
+    cur = conn.cursor()
     cur.execute(create_sql)
     ins = f"INSERT INTO {table_uuid} VALUES (?, ?, ?, ?)"
 
     row = frame.iloc[0]
-    with sql.pandasSQL_builder(sqlite_buildin) as pandas_sql:
+    with sql.pandasSQL_builder(conn) as pandas_sql:
         pandas_sql.execute(ins, tuple(row))
-    sqlite_buildin.commit()
+    conn.commit()
 
-    result = sql.read_sql(f"select * from {table_uuid}", sqlite_buildin)
+    result = sql.read_sql(f"select * from {table_uuid}", conn)
     result.index = frame.index[:1]
     tm.assert_frame_equal(result, frame[:1])
 
 
-def test_xsqlite_schema(sqlite_buildin):
+@pytest.mark.parametrize("connect_and_uuid", setup(['sqlite_buildin'], uuid_tables = "test_dataframe_to_sql_empty"), indirect = True)
+def test_xsqlite_schema(connect_and_uuid):
+    conn = connect_and_uuid["conn"]
+    table_uuid = connect_and_uuid["table_uuid"]
+
     frame = DataFrame(
         np.random.default_rng(2).standard_normal((10, 4)),
         columns=Index(list("ABCD")),
         index=date_range("2000-01-01", periods=10, freq="B"),
     )
-    table_uuid = "table_"+create_uuid("test")
     create_sql = sql.get_schema(frame, table_uuid)
     lines = create_sql.splitlines()
     for line in lines:
@@ -4751,12 +4978,14 @@ def test_xsqlite_schema(sqlite_buildin):
     create_sql = sql.get_schema(frame, table_uuid, keys=["A", "B"])
     lines = create_sql.splitlines()
     assert 'PRIMARY KEY ("A", "B")' in create_sql
-    cur = sqlite_buildin.cursor()
+    cur = conn.cursor()
     cur.execute(create_sql)
 
 
-def test_xsqlite_execute_fail(sqlite_buildin):
-    table_uuid = "table_"+create_uuid("test")
+@pytest.mark.parametrize("connect_and_uuid", setup(['sqlite_buildin'], uuid_tables = "test_dataframe_to_sql_empty"), indirect = True)
+def test_xsqlite_execute_fail(connect_and_uuid):
+    conn = connect_and_uuid["conn"]
+    table_uuid = connect_and_uuid["table_uuid"]
     create_sql = f"""
     CREATE TABLE {table_uuid}
     (
@@ -4766,10 +4995,10 @@ def test_xsqlite_execute_fail(sqlite_buildin):
     PRIMARY KEY (a, b)
     );
     """
-    cur = sqlite_buildin.cursor()
+    cur = conn.cursor()
     cur.execute(create_sql)
 
-    with sql.pandasSQL_builder(sqlite_buildin) as pandas_sql:
+    with sql.pandasSQL_builder(conn) as pandas_sql:
         pandas_sql.execute(f'INSERT INTO {table_uuid} VALUES("foo", "bar", 1.234)')
         pandas_sql.execute(f'INSERT INTO {table_uuid} VALUES("foo", "baz", 2.567)')
 
@@ -4778,7 +5007,9 @@ def test_xsqlite_execute_fail(sqlite_buildin):
 
 
 def test_xsqlite_execute_closed_connection():
-    table_uuid = "table_"+create_uuid("test")
+    # This test should not be used with the connect_and_uuid fixture, because that
+    # fixture automatically manages connection closing
+    table_uuid = "table_"+create_uuid()("test")
     create_sql = f"""
     CREATE TABLE {table_uuid}
     (
@@ -4800,105 +5031,113 @@ def test_xsqlite_execute_closed_connection():
         tquery(f"select * from {table_uuid}", con=conn)
 
 
-def test_xsqlite_keyword_as_column_names(sqlite_buildin):
-    table_uuid = "table_"+create_uuid("testkeywords")
+@pytest.mark.parametrize("connect_and_uuid", setup(['sqlite_buildin'], uuid_tables = "test_dataframe_to_sql_empty"), indirect = True)
+def test_xsqlite_keyword_as_column_names(connect_and_uuid):
+    conn = connect_and_uuid["conn"]
+    table_uuid = connect_and_uuid["table_uuid"]
     df = DataFrame({"From": np.ones(5)})
-    assert sql.to_sql(df, con=sqlite_buildin, name=table_uuid, index=False) == 5
+    assert sql.to_sql(df, con=conn, name=table_uuid, index=False) == 5
 
 
-def test_xsqlite_onecolumn_of_integer(sqlite_buildin):
+@pytest.mark.parametrize("connect_and_uuid", setup(['sqlite_buildin'], uuid_tables = "test_dataframe_to_sql_empty"), indirect = True)
+def test_xsqlite_onecolumn_of_integer(connect_and_uuid):
     # GH 3628
     # a column_of_integers dataframe should transfer well to sql
-    table_uuid = "table_"+create_uuid("mono_df")
+    conn = connect_and_uuid["conn"]
+    table_uuid = connect_and_uuid["table_uuid"]
     mono_df = DataFrame([1, 2], columns=["c0"])
-    assert sql.to_sql(mono_df, con=sqlite_buildin, name=table_uuid, index=False) == 2
+    assert sql.to_sql(mono_df, con=conn, name=table_uuid, index=False) == 2
     # computing the sum via sql
-    con_x = sqlite_buildin
-    the_sum = sum(my_c0[0] for my_c0 in con_x.execute(f"select * from {table_uuid}"))
+    # con_x = sqlite_buildin
+    the_sum = sum(my_c0[0] for my_c0 in conn.execute(f"select * from {table_uuid}"))
     # it should not fail, and gives 3 ( Issue #3628 )
     assert the_sum == 3
 
-    result = sql.read_sql(f"select * from {table_uuid}", con_x)
+    result = sql.read_sql(f"select * from {table_uuid}", conn)
     tm.assert_frame_equal(result, mono_df)
 
 
-def test_xsqlite_if_exists(sqlite_buildin):
+@pytest.mark.parametrize("connect_and_uuid", setup(['sqlite_buildin'], uuid_tables = "test_dataframe_to_sql_empty"), indirect = True)
+def test_xsqlite_if_exists(connect_and_uuid):
+    conn = connect_and_uuid["conn"]
+    table_uuid = connect_and_uuid["table_uuid"]
+
+
     df_if_exists_1 = DataFrame({"col1": [1, 2], "col2": ["A", "B"]})
     df_if_exists_2 = DataFrame({"col1": [3, 4, 5], "col2": ["C", "D", "E"]})
-    table_name = "table_"+create_uuid("table_if_exists")
-    sql_select = f"SELECT * FROM {table_name}"
+    sql_select = f"SELECT * FROM {table_uuid}"
 
     msg = "'notvalidvalue' is not valid for if_exists"
     with pytest.raises(ValueError, match=msg):
         sql.to_sql(
             frame=df_if_exists_1,
-            con=sqlite_buildin,
-            name=table_name,
+            con=conn,
+            name=table_uuid,
             if_exists="notvalidvalue",
         )
-    drop_table(table_name, sqlite_buildin)
+    drop_table(table_uuid, conn)
 
     # test if_exists='fail'
     sql.to_sql(
-        frame=df_if_exists_1, con=sqlite_buildin, name=table_name, if_exists="fail"
+        frame=df_if_exists_1, con=conn, name=table_uuid, if_exists="fail"
     )
-    msg = f"Table '{table_name}' already exists"
+    msg = f"Table '{table_uuid}' already exists"
     with pytest.raises(ValueError, match=msg):
         sql.to_sql(
             frame=df_if_exists_1,
-            con=sqlite_buildin,
-            name=table_name,
+            con=conn,
+            name=table_uuid,
             if_exists="fail",
         )
     # test if_exists='replace'
     sql.to_sql(
         frame=df_if_exists_1,
-        con=sqlite_buildin,
-        name=table_name,
+        con=conn,
+        name=table_uuid,
         if_exists="replace",
         index=False,
     )
-    assert tquery(sql_select, con=sqlite_buildin) == [(1, "A"), (2, "B")]
+    assert tquery(sql_select, con=conn) == [(1, "A"), (2, "B")]
     assert (
         sql.to_sql(
             frame=df_if_exists_2,
-            con=sqlite_buildin,
-            name=table_name,
+            con=conn,
+            name=table_uuid,
             if_exists="replace",
             index=False,
         )
         == 3
     )
-    assert tquery(sql_select, con=sqlite_buildin) == [(3, "C"), (4, "D"), (5, "E")]
-    drop_table(table_name, sqlite_buildin)
+    assert tquery(sql_select, con=conn) == [(3, "C"), (4, "D"), (5, "E")]
+    drop_table(table_uuid, conn)
 
     # test if_exists='append'
     assert (
         sql.to_sql(
             frame=df_if_exists_1,
-            con=sqlite_buildin,
-            name=table_name,
+            con=conn,
+            name=table_uuid,
             if_exists="fail",
             index=False,
         )
         == 2
     )
-    assert tquery(sql_select, con=sqlite_buildin) == [(1, "A"), (2, "B")]
+    assert tquery(sql_select, con=conn) == [(1, "A"), (2, "B")]
     assert (
         sql.to_sql(
             frame=df_if_exists_2,
-            con=sqlite_buildin,
-            name=table_name,
+            con=conn,
+            name=table_uuid,
             if_exists="append",
             index=False,
         )
         == 3
     )
-    assert tquery(sql_select, con=sqlite_buildin) == [
+    assert tquery(sql_select, con=conn) == [
         (1, "A"),
         (2, "B"),
         (3, "C"),
         (4, "D"),
         (5, "E"),
     ]
-    drop_table(table_name, sqlite_buildin)
+    drop_table(table_uuid, conn)
